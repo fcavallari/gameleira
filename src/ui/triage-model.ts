@@ -17,6 +17,9 @@ export const DEFAULT_FILTERS: TriageFilters = { status: 'all', sev: new Set<Seve
 /** Verdicts are keyed by the process id; a persistence-only item has none, so it uses its queue key (`i:<id>`). */
 export const verdictKey = (q: QueueItem): string => q.procId ?? q.key;
 
+/** Pressing the verdict a queue item already has takes it back to unreviewed (the note is kept). */
+export const toggleStatus = (current: Status, pressed: 'confirmed' | 'benign'): Status => (current === pressed ? 'unreviewed' : pressed);
+
 /** Name shown for a queue item: the process name, or `persistence: <plist>` for a persistence-only item. */
 export function itemName(cap: LoadedCapture, q: QueueItem): string {
   if (q.procId !== null) return displayName(cap.model, q.procId);

@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { LoadedCapture } from '../ingest/load';
 import { ancestry, childrenIndex, displayName } from '../model/relations';
 import type { ProcId, Process } from '../model/types';
@@ -8,7 +8,7 @@ import type { Severity } from '../rules/rules';
 import { programKey } from '../session/routine';
 import type { Status } from '../session/store';
 import { useSession } from './session-context';
-import { fmtArgs, fmtTime, MITRE_NAMES, NO_IDENTITY } from './triage-model';
+import { fmtArgs, fmtTime, MITRE_NAMES, NO_IDENTITY, toggleStatus } from './triage-model';
 
 const SHOW_FIRST = 40;
 const yesNo = (b: boolean): string => (b ? 'yes' : 'no');
@@ -179,18 +179,58 @@ function ContextOnly({ findings }: { findings: Finding[] }) {
   );
 }
 
-function Note({ saved, noteRef, onSave }: { saved: string; noteRef: RefObject<HTMLTextAreaElement | null>; onSave(text: string): void }) {
+const NOTE_DEBOUNCE_MS = 500;
+
+/**
+ * The note saves while typing (debounced), on blur, when the pane goes away and when the page is hidden. The save always
+ * goes to the capture and process the note was opened on (`fingerprint`, `vkey`), never to whatever is active by then:
+ * a capture that finishes loading switches the active capture and unmounts this field while the user is still typing.
+ */
+function Note({ vkey, fingerprint, status, saved, noteRef }: {
+  vkey: string; fingerprint: string; status: Status; saved: string; noteRef: RefObject<HTMLTextAreaElement | null>;
+}) {
+  const { setVerdict } = useSession();
   const [text, setText] = useState(saved);
+  const textRef = useRef(saved);
+  const savedRef = useRef(saved);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // The latest status and saver, read when a save fires (a click on Confirm may have come after the first keystroke).
+  const live = useRef({ status, setVerdict });
+  live.current = { status, setVerdict };
+  // The saved note changing from outside (another save) is not a local edit.
+  useEffect(() => { savedRef.current = saved; }, [saved]);
+
+  const flush = useRef(() => {
+    clearTimeout(timer.current);
+    timer.current = undefined;
+    if (textRef.current === savedRef.current) return;
+    savedRef.current = textRef.current;
+    void live.current.setVerdict(vkey, live.current.status, textRef.current, fingerprint);
+  });
+
+  useEffect(() => {
+    const f = flush.current;
+    window.addEventListener('pagehide', f);
+    return () => { window.removeEventListener('pagehide', f); f(); };
+  }, []);
+
   return (
     <label className="note-label">Note
-      <textarea ref={noteRef} rows={3} value={text} onChange={e => { setText(e.target.value); }}
-        onBlur={() => { if (text !== saved) onSave(text); }} />
+      <textarea ref={noteRef} rows={3} value={text}
+        onChange={e => {
+          setText(e.target.value);
+          textRef.current = e.target.value;
+          clearTimeout(timer.current);
+          timer.current = setTimeout(flush.current, NOTE_DEBOUNCE_MS);
+        }}
+        onBlur={flush.current} />
     </label>
   );
 }
 
 function Actions({ vkey, p, noteRef }: { vkey: string; p: Process | null; noteRef: RefObject<HTMLTextAreaElement | null> }) {
   const c = useSession();
+  const fingerprint = c.active ?? '';
   const verdict = c.verdicts.get(vkey);
   const status: Status = verdict?.status ?? 'unreviewed';
   const img = p ? latestImage(p) : undefined;
@@ -200,8 +240,8 @@ function Actions({ vkey, p, noteRef }: { vkey: string; p: Process | null; noteRe
     <Section id="d-actions" title="Actions">
       <p className="small"><span className="muted">Status: </span><strong>{STATUS_TEXT[status]}</strong></p>
       <div className="row">
-        <button className="primary" aria-pressed={status === 'confirmed'} onClick={() => { void c.setVerdict(vkey, 'confirmed', undefined); }}>✔ Confirm suspicious <kbd>c</kbd></button>
-        <button aria-pressed={status === 'benign'} onClick={() => { void c.setVerdict(vkey, 'benign', undefined); }}>✕ Benign <kbd>b</kbd></button>
+        <button className="primary" aria-pressed={status === 'confirmed'} onClick={() => { void c.setVerdict(vkey, toggleStatus(status, 'confirmed'), undefined); }}>✔ Confirm suspicious <kbd>c</kbd></button>
+        <button aria-pressed={status === 'benign'} onClick={() => { void c.setVerdict(vkey, toggleStatus(status, 'benign'), undefined); }}>✕ Benign <kbd>b</kbd></button>
         {p && (pkey !== null && c.routineKeys.has(pkey)
           ? <button onClick={() => { void c.removeRoutine(pkey); }}>Stop treating as routine</button>
           : <button disabled={noIdentity} title={noIdentity ? 'No signing ID, team ID or path: it cannot be told apart from other programs' : undefined}
@@ -209,8 +249,8 @@ function Actions({ vkey, p, noteRef }: { vkey: string; p: Process | null; noteRe
         {p && <button onClick={() => { c.showInTree(p.id); }}>Show in tree <kbd>t</kbd></button>}
       </div>
       {p && <p className="muted small">“Treat as routine” hides every run of this program, in every capture of this session.</p>}
-      <Note key={vkey} saved={verdict?.note ?? ''} noteRef={noteRef} onSave={text => { void c.setVerdict(vkey, status, text); }} />
-      <p className="muted small">Press <kbd>n</kbd> to jump to the note.</p>
+      <Note key={`${fingerprint}:${vkey}`} vkey={vkey} fingerprint={fingerprint} status={status} saved={verdict?.note ?? ''} noteRef={noteRef} />
+      <p className="muted small">Press <kbd>n</kbd> to jump to the note. Press Confirm or Benign again to go back to unreviewed.</p>
     </Section>
   );
 }

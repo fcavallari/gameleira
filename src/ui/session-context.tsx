@@ -69,8 +69,12 @@ export interface SessionCtx {
   loadFiles(files: File[]): Promise<void>;
   setActive(fingerprint: string): void;
   setView(v: View): void;
-  /** `note` omitted keeps the existing note. A persistence-only queue item has no process: pass its queue key (`i:<persistenceId>`). */
-  setVerdict(procId: ProcId, status: Status, note?: string): Promise<void>;
+  /**
+   * `note` omitted keeps the existing note. A persistence-only queue item has no process: pass its queue key (`i:<persistenceId>`).
+   * `fingerprint` names the capture the verdict belongs to (default: the active one). Anything that saves later than it
+   * was started, like a note, must pass the capture it began under: the active capture may have changed since.
+   */
+  setVerdict(procId: ProcId, status: Status, note?: string, fingerprint?: string): Promise<void>;
   /** Resolves false when refused (no program identity) or declined at the risky-program prompt. */
   addRoutine(img: Image): Promise<boolean>;
   removeRoutine(key: string): Promise<void>;
@@ -279,8 +283,9 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     () => (capture ? applyRoutine(capture.analysis, capture.model, routineKeys) : null),
     [capture, routineKeys]);
 
-  const setVerdict = useCallback(async (procId: ProcId, status: Status, note?: string) => {
-    const { session: s, active: fp, captures: caps } = latest.current;
+  const setVerdict = useCallback(async (procId: ProcId, status: Status, note?: string, fingerprint?: string) => {
+    const { session: s, active, captures: caps } = latest.current;
+    const fp = fingerprint ?? active;
     const cap = fp ? caps.get(fp) : undefined;
     const p = cap?.model.processes.get(procId);
     const queued = cap?.analysis.queue.find(q => q.key === procId);

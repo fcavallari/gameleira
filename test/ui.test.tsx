@@ -678,7 +678,37 @@ test('note is saved on blur, only when it changed', async () => {
   expect(setVerdict).not.toHaveBeenCalled();
   await user.type(note, 'phishing prompt');
   await user.tab();
-  expect(setVerdict).toHaveBeenCalledWith(await osascriptId(), 'unreviewed', 'phishing prompt');
+  expect(setVerdict).toHaveBeenCalledWith(await osascriptId(), 'unreviewed', 'phishing prompt', (await loadEsLab()).fingerprint);
+}, 60_000);
+
+test('pressing the verdict a process already has takes it back to unreviewed (button and key)', async () => {
+  const { setVerdict } = renderTriage(await loadEsLab());
+  await user.click(screen.getByText(/display dialog/));
+  const confirm = screen.getByRole('button', { name: /confirm suspicious/i });
+  const benign = screen.getByRole('button', { name: /^✕ benign/i });
+  expect(confirm).toHaveAttribute('aria-pressed', 'false');
+  await user.click(confirm);
+  expect(setVerdict).toHaveBeenLastCalledWith(await osascriptId(), 'confirmed', undefined);
+  expect(confirm).toHaveAttribute('aria-pressed', 'true');
+  expect(benign).toHaveAttribute('aria-pressed', 'false');
+  await user.click(confirm);
+  expect(setVerdict).toHaveBeenLastCalledWith(await osascriptId(), 'unreviewed', undefined);
+  expect(confirm).toHaveAttribute('aria-pressed', 'false');
+
+  await user.click(benign);
+  expect(benign).toHaveAttribute('aria-pressed', 'true');
+  await user.click(confirm);   // a different verdict switches, it does not toggle off
+  expect(setVerdict).toHaveBeenLastCalledWith(await osascriptId(), 'confirmed', undefined);
+  expect(benign).toHaveAttribute('aria-pressed', 'false');
+
+  // keys: c on a confirmed process un-confirms it; b on an unreviewed one marks it benign, a second b undoes it
+  await user.click(document.body);
+  await user.keyboard('c');
+  expect(setVerdict).toHaveBeenLastCalledWith(await osascriptId(), 'unreviewed', undefined);
+  await user.keyboard('b');
+  expect(setVerdict).toHaveBeenLastCalledWith(await osascriptId(), 'benign', undefined);
+  await user.keyboard('b');
+  expect(setVerdict).toHaveBeenLastCalledWith(await osascriptId(), 'unreviewed', undefined);
 }, 60_000);
 
 test('empty queue says so', async () => {
@@ -1020,3 +1050,63 @@ test('flatten: every process is a row or counted in a fold row; reveal opens onl
   expect(revealKeys(f, keep, false, '3:1')).toEqual(['n:1:1']);
   expect(revealKeys(f, keep, true, '6:1')).toEqual(['n:5:1', 'n:4:1', 'g:unreachable']);   // leaf < b < a, the group's first member
 });
+
+// --- Notes survive a capture switch and unmounting ----------------------------------------------------------------
+
+/** The real provider with the triage view, on a session that has loaded `first`; `selectFirstFlagged` picks a process. */
+async function triageSession(first: FixtureName): Promise<{ store: Store; sessionId: string; demo: LoadedCapture; procId: string }> {
+  const store = await openStore();
+  const s = await store.createSession('notes');
+  render(<SessionProvider store={store}><Probe /><TriageView /></SessionProvider>);
+  await waitFor(() => { expect(ctx).toBeDefined(); });
+  await act(async () => { await ctx.openSession(s.id); });
+  await act(async () => { await ctx.loadFiles([dropped(first)]); });
+  const demo = ctx.captures.get(ctx.active!)!;
+  const procId = demo.analysis.queue.find(q => q.kind === 'process')!.procId!;
+  act(() => { ctx.selectProc(procId); });
+  return { store, sessionId: s.id, demo, procId };
+}
+
+test('a note typed on capture A is saved under A when capture B finishes loading before blur', async () => {
+  const { store, sessionId, demo, procId } = await triageSession('shlayer.json');
+  await user.type(screen.getByLabelText(/note/i), 'drops a payload');   // still focused, not yet saved
+  expect(await store.listVerdicts(sessionId, demo.fingerprint)).toHaveLength(0);
+
+  await act(async () => { await ctx.loadFiles([dropped('rustbucket.json')]); });   // switches `active`, unmounts the note
+  expect(ctx.active).not.toBe(demo.fingerprint);
+  await waitFor(async () => { expect(await store.listVerdicts(sessionId, demo.fingerprint)).toHaveLength(1); });
+  const [v] = await store.listVerdicts(sessionId, demo.fingerprint);
+  expect(v).toMatchObject({ procKey: procId, status: 'unreviewed', note: 'drops a payload' });
+  expect(await store.listVerdicts(sessionId, ctx.active!)).toHaveLength(0);
+  expect(ctx.storeError).toBeNull();
+
+  act(() => { ctx.setActive(demo.fingerprint); ctx.selectProc(procId); });   // back on A: the note is there
+  expect(await screen.findByLabelText(/note/i)).toHaveValue('drops a payload');
+}, 60_000);
+
+test('a note is saved while typing (debounced) and when the pane unmounts', async () => {
+  const { store, sessionId, demo, procId } = await triageSession('shlayer.json');
+  await user.type(screen.getByLabelText(/note/i), 'first');
+  await waitFor(async () => { expect((await store.listVerdicts(sessionId, demo.fingerprint))[0]?.note).toBe('first'); }, { timeout: 3000 });
+
+  await user.type(screen.getByLabelText(/note/i), ' second');   // not saved yet: the debounce has not fired
+  expect((await store.listVerdicts(sessionId, demo.fingerprint))[0]?.note).toBe('first');
+  act(() => { ctx.selectProc(null); });   // the note unmounts: it flushes
+  await waitFor(async () => { expect((await store.listVerdicts(sessionId, demo.fingerprint))[0]?.note).toBe('first second'); });
+  expect((await store.listVerdicts(sessionId, demo.fingerprint))[0]?.procKey).toBe(procId);
+}, 60_000);
+
+test('a note is saved when the page is hidden', async () => {
+  const { store, sessionId, demo } = await triageSession('shlayer.json');
+  await user.type(screen.getByLabelText(/note/i), 'leaving');
+  act(() => { window.dispatchEvent(new Event('pagehide')); });
+  await waitFor(async () => { expect((await store.listVerdicts(sessionId, demo.fingerprint))[0]?.note).toBe('leaving'); });
+}, 60_000);
+
+test('setVerdict can target a capture that is not the active one', async () => {
+  const { store, sessionId, demo, procId } = await triageSession('shlayer.json');
+  await act(async () => { await ctx.loadFiles([dropped('rustbucket.json')]); });
+  await act(async () => { await ctx.setVerdict(procId, 'benign', 'on A', demo.fingerprint); });
+  expect(await store.listVerdicts(sessionId, demo.fingerprint)).toHaveLength(1);
+  expect(await store.listVerdicts(sessionId, ctx.active!)).toHaveLength(0);
+}, 60_000);
