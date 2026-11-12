@@ -17,6 +17,10 @@ function tokenPid(token: TokenKey): number {
   return Number(token.split(':')[0]);
 }
 
+function tokenPidversion(token: TokenKey): number {
+  return Number(token.split(':')[1]);
+}
+
 /** Fills originalParent, currentParent and responsible on every process, creating ghosts
  *  for pre-capture references, then attributes each persistence item to the plist's creator. */
 export function resolveRelations(m: CaptureModel): void {
@@ -28,10 +32,38 @@ export function resolveRelations(m: CaptureModel): void {
     else byPid.set(p.pid, [p]);
   }
   const tokenGhosts = new Map<number, Process[]>();
+  // pidversion range of each captured process's known tokens, taken before any ghost exists.
+  const pvRange = new Map<ProcId, { min: number; max: number }>();
+  for (const [token, id] of m.tokenIndex) {
+    const pv = tokenPidversion(token);
+    const r = pvRange.get(id);
+    if (!r) pvRange.set(id, { min: pv, max: pv });
+    else { r.min = Math.min(r.min, pv); r.max = Math.max(r.max, pv); }
+  }
+
+  const latestAtOrBefore = (list: Process[] | undefined, seq: number): Process | undefined => {
+    let best: Process | undefined;
+    for (const p of list ?? []) {
+      if (p.firstSeq <= seq && (!best || p.firstSeq > best.firstSeq)) best = p;
+    }
+    return best;
+  };
 
   const adopt = (g: Process, child: Process): ProcId => {
     if (child.firstSeq < g.firstSeq) g.firstSeq = child.firstSeq;
     return g.id;
+  };
+
+  /** The captured process an unregistered token belongs to: one inside its exec chain, or
+   *  pre-capture history of a process that started before the capture. Not a PID-reuse predecessor. */
+  const owner = (token: TokenKey, pid: number, child: Process): Process | undefined => {
+    const cand = latestAtOrBefore(byPid.get(pid), child.firstSeq);
+    const r = cand && pvRange.get(cand.id);
+    if (!cand || !r) return undefined;
+    const pv = tokenPidversion(token);
+    if (pv >= r.min && pv <= r.max) return cand;
+    if (cand.forkParent === null && pv < r.min) return cand;
+    return undefined;
   };
 
   const byToken = (token: TokenKey | null, child: Process): ProcId | null => {
@@ -40,26 +72,23 @@ export function resolveRelations(m: CaptureModel): void {
     if (!Number.isFinite(pid) || pid === 0) return null;
     let id = m.tokenIndex.get(token);
     if (id === undefined) {
-      const g = ghost(token, pid, child.firstSeq);
-      m.processes.set(g.id, g);
-      m.tokenIndex.set(token, g.id);
-      const list = tokenGhosts.get(pid);
-      if (list) list.push(g);
-      else tokenGhosts.set(pid, [g]);
-      id = g.id;
+      const real = owner(token, pid, child);
+      if (real) {
+        id = real.id;
+      } else {
+        const g = ghost(token, pid, child.firstSeq);
+        m.processes.set(g.id, g);
+        const list = tokenGhosts.get(pid);
+        if (list) list.push(g);
+        else tokenGhosts.set(pid, [g]);
+        id = g.id;
+      }
+      m.tokenIndex.set(token, id);
     } else {
       const known = m.processes.get(id);
       if (known?.ghost) adopt(known, child);
     }
     return id === child.id ? null : id;
-  };
-
-  const latestAtOrBefore = (list: Process[] | undefined, seq: number): Process | undefined => {
-    let best: Process | undefined;
-    for (const p of list ?? []) {
-      if (p.firstSeq <= seq && (!best || p.firstSeq > best.firstSeq)) best = p;
-    }
-    return best;
   };
 
   const byPidRef = (pid: number | null, child: Process): ProcId | null => {
