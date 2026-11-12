@@ -30,7 +30,7 @@ sudo eslogger fork exec exit create rename unlink setextattr btm_launch_item_add
 ```
 
 - `exit` gives process lifetimes.
-- `setextattr` lets the tool see a downloaded file losing its quarantine flag.
+- `setextattr` records extended-attribute writes on files (shown under "What it did" in the detail pane). No rule uses them yet; a future rule could check whether a downloaded file got its quarantine flag.
 - `btm_*` captures persistence registrations (login items, launch agents and daemons).
 - `write` is left out on purpose because it is very noisy; the tool still handles it if it is present.
 
@@ -62,7 +62,7 @@ The rules are data: each has an id, a severity, a plain explanation and MITRE AT
 | `launchctl-load` | high | `launchctl load`, `bootstrap` or `submit`: starting a launch job right now (T1569.001). |
 | `quarantine-strip` | high | `xattr -c`, or `xattr -d com.apple.quarantine`: removing the flag that makes Gatekeeper check a download (T1553.001). |
 | `payload-decode` | med | `openssl enc -d` or `base64 -d`: unpacking a hidden payload (T1140). |
-| `shell-from-pipe` | med | A shell with no script and a single argument whose stdin is a pipe: the `curl ... \| bash` pattern, with no script on disk to inspect (T1059.004). Needs `eslogger` version 11 or later. |
+| `shell-from-pipe` | med | A shell that was started with no arguments, whose stdin was a pipe, and that ran no script file: the `curl ... \| bash` pattern, with no script on disk to inspect (T1059.004). Needs `eslogger` version 11 or later. |
 | `shell-under-app` | med | A shell launched by an app inside a `.app` bundle, other than terminals and editors (T1059.004). |
 | `download` | med | `curl` or `wget` writing to a file (`-o`, `-O`, `--output`) or creating a file (T1105). |
 | `archive-staging` | med or high | `ditto -c`, `zip` or `tar c`. High if a source path is in a temporary or user-writable location (T1560.001). |
@@ -70,7 +70,7 @@ The rules are data: each has an id, a severity, a plain explanation and MITRE AT
 | `unsigned` | med | A non-Apple binary with no code signature at all (T1553.002). |
 | `adhoc` | low | A non-Apple binary that is ad-hoc signed, so it has no developer identity. Common for Homebrew and locally built tools, so it is context only (T1553.002). |
 | `orphaned` | low | A process whose parent exited, so it now sits under launchd (pid 1) (T1564). |
-| `recon` | low | `system_profiler`, `sw_vers`, `whoami`, `id`, `hostname`, `sysctl`, `ioreg`, `uname`, `ps`, `airport`, `scutil`, `networksetup`, `security`, `csrutil`, `spctl` (T1082, T1033). Queued only in context, see below. |
+| `recon` | low | `system_profiler`, `sw_vers`, `whoami`, `id`, `hostname`, `sysctl`, `ioreg`, `uname`, `ps`, `airport`, `scutil`, `networksetup`, `security`, `csrutil`, `spctl` (T1082, T1033). Queued only when it is in a flagged chain or part of a burst of 3 or more different recon tools under the same parent within 60 s; otherwise shown as context in the detail pane (see below). |
 
 ## What the queue means
 
@@ -79,7 +79,7 @@ The queue on the Triage tab lists the processes (and a few standalone persistenc
 - **Severity (high, med, low)** is how strongly the strongest finding on that row suggests something worth your time. High is things almost no ordinary software does, such as a fake password dialog or a launch agent that runs a shell. Low is weak signals that matter mainly in company. Rows are sorted high first, then by time.
 - **Part of a flagged chain** (`in chain` on a row) means the process did nothing alarming itself, or only a low-signal thing, but it descends from a process with a med or high finding. A `whoami` is nothing on its own; under a shell that was fed from a pipe it is probably part of the same intrusion. Look at the parent first.
 - **Context-only** findings are the low-signal ones (`recon`, `adhoc`, and low `odd-location-exec`) on processes that are not in a flagged chain. They would flood the queue (a normal Mac runs `ps` all the time), so they are kept out of it and shown only in that process's detail pane. A burst of three or more different recon tools under one parent within a minute is the exception and is queued.
-- **Routine** is a mark you set on a program ("Treat as routine") to say you have seen it and it is normal on this machine. It hides every run of that program, in every capture of the session, and the header counts how many queue rows are hidden. It is reversible from the same button.
+- **Routine** is a mark you set on a program ("Treat as routine") to say you have seen it and it is normal on this machine. It hides every run of that program, in every capture of the session, and the header counts how many queue rows are hidden. A program is identified by its signing ID, team ID and executable path together, so a re-signed or relocated copy counts as a different program and is not hidden. Persistence items (launch items with no creating process) are never hidden by routine. It is reversible from the same button.
 
 ## Performance
 
@@ -91,7 +91,7 @@ Measured on an Apple M5 Max, 48 GB, Node 24, and the in-app browser pane (Chromi
 |---|---|---|
 | `es-lab.jsonl`, 28.6 MB | browser, from the file input's change event to the triage screen | 0.09 s on first load, 0.3 to 0.5 s on later ones (includes writing the capture record to IndexedDB). Under the 5 s target. |
 | `atomic_stealer.json`, 1.5 MB | browser, same measure | about 0.1 s |
-| `scratch/big.jsonl`, 516 MB, 208,980 events | browser, same measure | 4.6 s, no crash. The triage list and the tree stayed responsive. Tab heap read 69 MB afterwards. |
+| `scratch/big.jsonl`, 516 MB, 208,980 events | browser, same measure | 4.6 s, no crash. Switching from Triage to Tree and back took about 1.2 s and the tree rendered rows; I did not otherwise test interactivity. Tab heap read 69 MB afterwards. |
 | `scratch/big.jsonl` | Node: stream lines through `ModelBuilder`, then `analyze` | 1.1 s total (parse 1.0 s, analyze 0.04 s). Peak `heapUsed` 292 MB, peak RSS 587 MB, 232 MB retained after GC. For comparison `es-lab.jsonl` alone peaks at 23 MB heap. |
 
 Caveat: `scratch/big.jsonl` is `es-lab.jsonl` repeated 18 times with `global_seq_num` offset by `n x 10,000,000` per copy (`node scripts/make-big.mjs`). Every copy repeats the same pids and audit tokens, so the model still sees 4,722 processes, not 18 times as many; the test proves load volume and memory behaviour on very large inputs, not a capture with 500 MB of distinct processes. A real capture with many distinct processes would retain more memory per event. The browser was driven by feeding the file to the page's file input from script, not by a physical drag from Finder. Because the capture fingerprint is taken from the file's head, `big.jsonl` has the same fingerprint as `es-lab.jsonl` and replaces it within a session; that is the "a capture that grows keeps its verdicts" behaviour working as designed.
