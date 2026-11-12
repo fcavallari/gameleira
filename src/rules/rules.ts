@@ -51,6 +51,20 @@ export function hasShortFlag(args: string[], letter: string): boolean {
   return args.some(a => a === `-${letter}` || (/^-[A-Za-z]+$/.test(a) && a.includes(letter)));
 }
 
+/** Output targets that are not a file on disk: curl's `-o /dev/null` and `-o -` (stdout). */
+const NOT_A_FILE = new Set(['/dev/null', '-']);
+
+/** What the output flag (`-o` for curl, `-O` for wget, or `--output`) points at; undefined when the flag has no value. */
+function outputTargets(a: string[], letter: string): (string | undefined)[] {
+  const out: (string | undefined)[] = [];
+  a.forEach((x, i) => {
+    if (x === '--output') out.push(a[i + 1]);
+    else if (x.startsWith('--output=')) out.push(x.slice('--output='.length));
+    else if (/^-[A-Za-z]+$/.test(x) && x.includes(letter)) out.push(a[i + 1]);
+  });
+  return out;
+}
+
 const LAUNCH_DIR = /^(?:\/Users\/[^/]+\/Library\/LaunchAgents|\/Library\/Launch(?:Agents|Daemons))\//;
 const TERMINALS_EDITORS =
   /\/(?:Terminal|iTerm2?|Visual Studio Code|Code|Cursor|Xcode|Claude|Warp|Ghostty|Alacritty|kitty|WezTerm)\.app\//;
@@ -218,7 +232,11 @@ export const RULES: Rule[] = [
       const n = basename(img.path);
       if (n !== 'curl' && n !== 'wget') return null;
       const a = rest(img);
-      const toFile = hasShortFlag(a, 'o') || hasShortFlag(a, 'O') || a.some(x => x === '--output' || x.startsWith('--output='));
+      let toFile = hasShortFlag(a, 'o') || hasShortFlag(a, 'O') || a.some(x => x === '--output' || x.startsWith('--output='));
+      // `curl -o /dev/null` (or `-o -`) throws the body away: nothing was written to disk. curl's `-O` names the file after the URL.
+      const targets = outputTargets(a, n === 'curl' ? 'o' : 'O');
+      const remoteName = n === 'curl' && hasShortFlag(a, 'O');
+      if (targets.length > 0 && !remoteName && targets.every(t => t !== undefined && NOT_A_FILE.has(t))) toFile = false;
       if (toFile) return { evidence: cmdline(img) };
       const created = p.fileOps.find(op => op.kind === 'create');
       return created ? { evidence: `${cmdline(img)}; created ${created.path}` } : null;

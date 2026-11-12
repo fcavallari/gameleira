@@ -154,6 +154,42 @@ describe('short-flag clusters', () => {
   test('curl -sLo downloads', () => expect(queuedRules(apple('/usr/bin/curl', ['curl', '-sLo', 'f', 'https://example.com']))).toContain('download'));
 });
 
+describe('download rule needs a file on disk', () => {
+  const curl = (...args: string[]) => queuedRules(apple('/usr/bin/curl', ['curl', ...args, 'https://example.com']));
+  const wget = (...args: string[]) => queuedRules(apple('/usr/bin/wget', ['wget', ...args, 'https://example.com']));
+  test('curl -o /dev/null does not fire', () => {
+    expect(curl('-o', '/dev/null')).not.toContain('download');
+    expect(curl('-sLo', '/dev/null')).not.toContain('download');
+    expect(curl('--output', '/dev/null')).not.toContain('download');
+    expect(curl('--output=/dev/null')).not.toContain('download');
+  });
+  test('curl -o - (stdout) does not fire', () => {
+    expect(curl('-s', '-o', '-')).not.toContain('download');
+    expect(curl('--output', '-')).not.toContain('download');
+  });
+  test('wget -O - and -O /dev/null do not fire', () => {
+    expect(wget('-qO', '-')).not.toContain('download');
+    expect(wget('-O', '/dev/null')).not.toContain('download');
+  });
+  test('a real output file still fires', () => {
+    expect(curl('-o', '/tmp/payload')).toContain('download');
+    expect(curl('--output=/tmp/payload')).toContain('download');
+    expect(curl('-o', '/dev/null', '-o', 'out.bin')).toContain('download');
+    expect(wget('-qO', '/tmp/payload')).toContain('download');
+  });
+  test('curl -O writes a file named after the URL, even next to -o /dev/null', () => {
+    expect(curl('-O')).toContain('download');
+    expect(curl('-o', '/dev/null', '-O')).toContain('download');
+  });
+  test('the create-FileOp path is unchanged: no output flag, but the process created a file', () => {
+    const m = synth([apple('/usr/bin/curl', ['curl', 'https://example.com'])]);
+    expect(analyze(m).queue).toHaveLength(0);
+    m.processes.get('100:1')!.fileOps.push({ kind: 'create', path: '/tmp/x', time: 't', seq: 2 });
+    const f = analyze(m).queue[0]?.findings.find(x => x.ruleId === 'download');
+    expect(f?.evidence).toContain('created /tmp/x');
+  });
+});
+
 test('every finding explains itself', () => {
   for (const f of ['es-lab.jsonl', 'atomic_stealer.json', 'rustbucket.json', 'shlayer.json'] as const)
     for (const x of queued(f).items) for (const fd of x.item.findings) {
