@@ -7,7 +7,7 @@ import type { Status } from '../session/store';
 import { DetailPane } from './DetailPane';
 import { STATUS_ICON } from './QueueList';
 import { useSession } from './session-context';
-import { firstArgs } from './triage-model';
+import { rowArgs } from './triage-model';
 import {
   flatten, forestOf, keepSet, makeFoldInfo, revealKeys, searchSet,
   type FoldRow, type GroupRow, type NodeRow, type TreeRow,
@@ -37,7 +37,7 @@ function NodeItem({ row, cap, flag, routine, status, selected, onSelect, style, 
 }) {
   const proc = cap.model.processes.get(row.id);
   const name = displayName(cap.model, row.id);
-  const args = proc && !proc.ghost ? firstArgs(proc) : '';
+  const args = proc && !proc.ghost ? rowArgs(proc) : '';
   const label = args ? `${name} ${args}` : name;
   const st: Status = status ?? 'unreviewed';
   return (

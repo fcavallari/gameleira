@@ -27,17 +27,26 @@ export function itemName(cap: LoadedCapture, q: QueueItem): string {
   return `persistence: ${basename(item?.plistPath ?? null) || q.persistenceId || 'launch item'}`;
 }
 
-/** Arguments of the first exec'd image, without argv[0] (the name already shown). */
-export function firstArgs(p: Process): string {
-  const img = p.images.find(i => i.args !== null && !i.inherited) ?? p.images.find(i => i.args !== null);
-  return img?.args ? img.args.slice(1).join(' ') : '';
+/**
+ * What a row shows after its name (the latest image's program): the arguments of the latest exec that was captured,
+ * without argv[0]. When the latest image itself has no captured args (its exec was not seen), the args come from an
+ * earlier image and are prefixed with that image's program, so they are not read as the arguments of the name beside them.
+ */
+export function rowArgs(p: Process): string {
+  let i = p.images.length - 1;
+  while (i >= 0 && p.images[i]!.args === null) i--;
+  const img = p.images[i];
+  if (!img?.args) return '';
+  const args = img.args.slice(1).join(' ');
+  if (i === p.images.length - 1) return args;
+  return [basename(img.path), args].filter(Boolean).join(' ');
 }
 
 /** What the row shows after the name: args, or the launched program for a persistence item. */
 export function itemArgs(cap: LoadedCapture, q: QueueItem): string {
   if (q.procId !== null) {
     const p = cap.model.processes.get(q.procId);
-    const args = p ? firstArgs(p) : '';
+    const args = p ? rowArgs(p) : '';
     return args || (q.findings[0]?.title ?? '');
   }
   const item = cap.model.persistence.find(i => i.id === q.persistenceId);
