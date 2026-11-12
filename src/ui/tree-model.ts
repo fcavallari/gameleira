@@ -45,7 +45,9 @@ export function forestOf(m: CaptureModel, mode: ParentMode): Forest {
       const fresh = list.filter(id => !placed.has(id)).sort((a, b) => seq(a) - seq(b));
       if (fresh.length === 0) continue;
       for (const id of fresh) { placed.add(id); parent.set(id, k); }
-      kids.set(k, [...(kids.get(k) ?? []), ...fresh]);
+      let mine = kids.get(k);
+      if (!mine) { mine = []; kids.set(k, mine); }
+      for (const id of fresh) { mine.push(id); }
       for (const id of fresh) work.push([id, idx.get(id) ?? []]);
     }
   };
@@ -132,7 +134,7 @@ export function makeFoldInfo(m: CaptureModel, forest: Forest, keep: Set<ProcId>)
         total++;
         const n = procName(m, id);
         counts.set(n, (counts.get(n) ?? 0) + 1);
-        stack.push(...(forest.kids.get(id) ?? []));
+        for (const kid of forest.kids.get(id) ?? []) stack.push(kid);   // no spread: a parent can have 100k+ children
       }
       info = { total, label: foldLabel(counts), members };
     }
@@ -192,6 +194,8 @@ export function flatten(inp: FlattenInput): { rows: TreeRow[]; folded: number; f
   if (forest.unreachable > 0 && (visible === null || shown(UNREACHABLE).length > 0)) {
     stack.unshift({ type: 'group', depth: 0, foldable: false });
   }
+  /** Pushes so the first item pops first. A loop, not `push(...items)`: a parent can have 100k+ children. */
+  const pushReversed = (items: Item[]): void => { for (let i = items.length - 1; i >= 0; i--) stack.push(items[i]!); };
   while (stack.length > 0) {
     const it = stack.pop()!;
     if (it.type === 'node') {
@@ -201,7 +205,7 @@ export function flatten(inp: FlattenInput): { rows: TreeRow[]; folded: number; f
       const dflt = visible ? kids.length > 0 : keep.has(id) || it.inGroup === true;
       const expanded = kids.length > 0 && open(key, dflt);
       rows.push({ kind: 'node', key, id, depth: it.depth, expandable: kids.length > 0, expanded });
-      if (expanded) stack.push(...itemsOf(id, it.depth + 1, it.foldable, it.inGroup).reverse());
+      if (expanded) pushReversed(itemsOf(id, it.depth + 1, it.foldable, it.inGroup));
     } else if (it.type === 'fold') {
       const info = inp.foldInfo(it.parentKey!)!;
       const key = foldKey(it.parentKey!);
@@ -210,13 +214,13 @@ export function flatten(inp: FlattenInput): { rows: TreeRow[]; folded: number; f
       foldRows++;
       rows.push({ kind: 'fold', key, depth: it.depth, total: info.total, label: info.label, expanded });
       // Members are unflagged with no flagged descendants, so their subtrees need no folding.
-      if (expanded) stack.push(...info.members.map<Item>(id => ({ type: 'node', id, depth: it.depth + 1, foldable: false })).reverse());
+      if (expanded) pushReversed(info.members.map<Item>(id => ({ type: 'node', id, depth: it.depth + 1, foldable: false })));
     } else {
       const members = shown(UNREACHABLE);
       const dflt = visible !== null || members.some(id => keep.has(id));
       const expanded = open(GROUP_KEY, dflt);
       rows.push({ kind: 'group', key: GROUP_KEY, depth: 0, total: forest.unreachable, expanded });
-      if (expanded) stack.push(...members.map<Item>(id => ({ type: 'node', id, depth: 1, foldable: false, inGroup: true })).reverse());
+      if (expanded) pushReversed(members.map<Item>(id => ({ type: 'node', id, depth: 1, foldable: false, inGroup: true })));
     }
   }
   return { rows, folded, foldRows };

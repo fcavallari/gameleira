@@ -84,7 +84,8 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
   const [ovState, setOvState] = useState<{ search: string; map: Map<string, boolean> }>({ search: '', map: NO_OVERRIDES });
   const overrides = ovState.search === search ? ovState.map : NO_OVERRIDES;
   const noteRef = useRef<HTMLTextAreaElement>(null);
-  const pendingScroll = useRef<ProcId | null>(null);
+  /** A process to centre once the rows that show it exist (Show in tree, mode change, leaving a search). */
+  const [revealTo, setRevealTo] = useState<ProcId | null>(null);
 
   const forest = useMemo(() => forestOf(cap.model, mode), [cap, mode]);
   /** Flagged processes the triage queue still shows; routine-marked ones are left out, so they fold. */
@@ -121,7 +122,7 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
     const f = forestOf(cap.model, m);
     if (!f.parent.has(id)) return;
     open(revealKeys(f, keepSet(f, flagged), fold, id), resetSearch);
-    pendingScroll.current = id;
+    setRevealTo(id);
   }, [cap, flagged, fold, open]);
 
   // "Show in tree": reveal the process, whatever hid it (collapsed ancestors, a fold, the search).
@@ -143,17 +144,28 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
   }, [search]);
 
   const { scroller, mode: vmode, v } = useVirtualRows(rows.length, ROW_H);
-  useEffect(() => {
-    const id = pendingScroll.current;
-    if (id === null || vmode === 'pending') return;
+  /** Moves the row into view: `centre` for a reveal, otherwise only as far as needed (keys, clicks). */
+  const scrollTo = (id: ProcId, centre: boolean): boolean => {
     const i = rows.findIndex(r => r.kind === 'node' && r.id === id);
-    if (i < 0) return;
-    pendingScroll.current = null;
-    if (vmode === 'virtual') v.scrollToIndex(i, { align: 'center' });
-    else scroller.current?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' });
-  }, [rows, vmode]);
+    if (i < 0) return false;
+    if (vmode === 'virtual') v.scrollToIndex(i, { align: centre ? 'center' : 'auto' });
+    else scroller.current?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: centre ? 'center' : 'nearest' });
+    return true;
+  };
+  // The selection follows keys and clicks. Rows do not change then, so this must not wait for them.
+  useEffect(() => {
+    if (selected === null || revealTo !== null || vmode === 'pending') return;
+    scrollTo(selected, false);
+  }, [selected, vmode]);
+  // A reveal waits for the render that carries its expanded rows, then is done: it never lingers.
+  useEffect(() => {
+    if (revealTo === null || vmode === 'pending') return;
+    scrollTo(revealTo, true);
+    setRevealTo(null);
+  }, [revealTo, rows, vmode]);
 
   const select = useCallback((id: ProcId) => {
+    setRevealTo(null);
     c.selectProc(id);
     scroller.current?.focus({ preventScroll: true });
   }, [c, scroller]);
@@ -165,7 +177,7 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
     const go = (to: TreeRow | undefined) => {
       if (to?.kind !== 'node') return;
       e.preventDefault();
-      pendingScroll.current = to.id;
+      setRevealTo(null);
       c.selectProc(to.id);
     };
     const at = cur ? rows.indexOf(cur) : -1;

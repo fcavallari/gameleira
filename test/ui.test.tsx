@@ -837,6 +837,78 @@ test('clearing the search keeps the selected process on screen even when it sits
   expect(await screen.findByText(/routine: .*docker-tools/)).toBeInTheDocument();
 }, 60_000);
 
+/** Gives every element a 3-row-high box, so useVirtualRows picks the virtual list; returns the scrollTo spy and a restore. */
+function fakeLayout(height = 84): { scrollTo: ReturnType<typeof vi.fn>; restore(): void } {
+  const scrollTo = vi.fn();
+  const keys = ['clientHeight', 'offsetHeight', 'clientWidth', 'offsetWidth', 'scrollHeight'] as const;
+  const saved = keys.map(k => [k, Object.getOwnPropertyDescriptor(HTMLElement.prototype, k)] as const);
+  for (const k of keys) Object.defineProperty(HTMLElement.prototype, k, { configurable: true, get: () => (k === 'scrollHeight' ? 1_000_000 : k.endsWith('Height') ? height : 400) });
+  const rect = HTMLElement.prototype.getBoundingClientRect;
+  HTMLElement.prototype.getBoundingClientRect = () => ({ x: 0, y: 0, top: 0, left: 0, right: 400, bottom: height, width: 400, height, toJSON() { return {}; } });
+  const hadScrollTo = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTo');
+  HTMLElement.prototype.scrollTo = scrollTo as unknown as typeof HTMLElement.prototype.scrollTo;
+  return {
+    scrollTo,
+    restore() {
+      for (const [k, d] of saved) { if (d) Object.defineProperty(HTMLElement.prototype, k, d); else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[k]; }
+      HTMLElement.prototype.getBoundingClientRect = rect;
+      if (hadScrollTo) Object.defineProperty(HTMLElement.prototype, 'scrollTo', hadScrollTo); else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollTo;
+    },
+  };
+}
+
+test('virtual list: arrow keys scroll the selection into view, and a stale target never fires on a later rows change', async () => {
+  const layout = fakeLayout();
+  try {
+    await treeSession();
+    const tree = screen.getByRole('tree', { name: 'Process tree' });
+    expect(tree.querySelector('[role="treeitem"]')!.getAttribute('style')).toMatch(/translateY/);   // really the virtual list
+    await user.click(await screen.findByText(/^curl/));
+    layout.scrollTo.mockClear();
+    await user.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}');
+    expect(layout.scrollTo).toHaveBeenCalled();   // the selection walked past the 3 visible rows
+    const sel = screen.getByRole('treeitem', { selected: true });
+    expect(sel).toBeInTheDocument();
+
+    // Click somewhere else, then change the rows: nothing may jump to the earlier arrow target.
+    await user.click(await screen.findByText(/^curl/));
+    const calls = layout.scrollTo.mock.calls.length;
+    await user.click(screen.getByRole('checkbox', { name: /fold routine/i }));   // rows change
+    await user.click(screen.getByRole('checkbox', { name: /fold routine/i }));
+    expect(layout.scrollTo.mock.calls.length).toBe(calls);
+  } finally { layout.restore(); }
+}, 60_000);
+
+test('virtual list: Show in tree centres a process hidden in a fold', async () => {
+  const layout = fakeLayout();
+  try {
+    const cap = await treeSession();
+    layout.scrollTo.mockClear();
+    act(() => { ctx.showInTree(procNamed(cap.model, 'docker-tools').id); });
+    // scrollTo is a spy, so the window does not move; the target offset is well past the first rows.
+    await waitFor(() => { expect(layout.scrollTo.mock.calls.some(([o]) => (o as { top: number }).top > 84)).toBe(true); });
+  } finally { layout.restore(); }
+}, 60_000);
+
+test('a parent with 200,000 children flattens, folds and reveals without a stack overflow', () => {
+  const N = 200_000;
+  const ps: Process[] = [hand('1:1', 1, null, 'root', 1), hand('2:1', 2, '1:1', 'flagged', 2)];
+  for (let i = 0; i < N; i++) ps.push(hand(`${i + 10}:1`, i + 10, '1:1', 'kid', i + 10));
+  const m = handModel(ps);
+  const f = forestOf(m, 'original');
+  expect(f.kids.get('1:1')).toHaveLength(N + 1);
+  const keep = keepSet(f, ['2:1']);
+  const fi = makeFoldInfo(m, f, keep);
+  const folded = flatten({ forest: f, keep, fold: true, foldInfo: fi, visible: null, overrides: new Map() });
+  expect(folded.rows.map(r => r.kind)).toEqual(['node', 'node', 'fold']);
+  expect(folded.folded).toBe(N);
+  expect(folded.rows[2]).toMatchObject({ label: `routine: kid ×${N}` });
+  const openFold = flatten({ forest: f, keep, fold: true, foldInfo: fi, visible: null, overrides: new Map([['f:1:1', true]]) });
+  expect(openFold.rows).toHaveLength(3 + N);
+  const unfolded = flatten({ forest: f, keep, fold: false, foldInfo: fi, visible: null, overrides: new Map() });
+  expect(unfolded.rows).toHaveLength(N + 2);   // root, its flagged child and every kid
+});
+
 test('flag badges show the highest severity, status icons follow verdicts, arrow keys move the selection', async () => {
   const cap = await treeSession();
   const osa = procByPid(cap.model, 40753);
