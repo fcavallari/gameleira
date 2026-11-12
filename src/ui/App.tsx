@@ -12,12 +12,14 @@ function Screens() {
   return session ? <SessionScreen /> : <StartScreen />;
 }
 
-export function App() {
-  const [store, setStore] = useState<Store | null>(null);
+/** `store` is a test seam; the app opens its own IndexedDB store. */
+export function App({ store: injected }: { store?: Store } = {}) {
+  const [store, setStore] = useState<Store | null>(injected ?? null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    if (injected) return;
     openStore().then(setStore, (e: unknown) => { setError(e instanceof Error ? e.message : String(e)); });
-  }, []);
+  }, [injected]);
   if (error) {
     return (
       <main className="shell">

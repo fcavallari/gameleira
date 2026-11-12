@@ -1,5 +1,6 @@
 import { useState, type DragEvent } from 'react';
 import { ConfirmedTab } from './ConfirmedTab';
+import { StoreErrorBanner } from './StoreErrorBanner';
 import { useSession, type View } from './session-context';
 
 // Spec §4.2, verbatim.
@@ -99,6 +100,7 @@ export function SessionScreen() {
 
   return (
     <main className="shell">
+      <StoreErrorBanner />
       <header className="bar">
         <div className="row">
           <button onClick={c.closeSession}>← Sessions</button>

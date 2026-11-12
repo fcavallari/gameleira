@@ -60,3 +60,4 @@ progress { height: 10px; accent-color: var(--accent); }
 .confirmed code { display: block; font: 12px var(--mono); word-break: break-all; margin-top: 2px; }
 .note { margin: 4px 0 0; white-space: pre-wrap; }
 footer { margin-top: 32px; font-size: 12px; }
+.banner { display: flex; gap: 10px; align-items: center; margin: 0 0 10px; padding: 8px 12px; border: 1px solid var(--danger); border-radius: 8px; color: var(--danger); background: var(--panel); }

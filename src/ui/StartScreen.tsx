@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { ImportSession } from './ConfirmedTab';
+import { StoreErrorBanner } from './StoreErrorBanner';
 import { useSession } from './session-context';
 
 export function StartScreen() {
@@ -14,6 +15,7 @@ export function StartScreen() {
     const n = name.trim();
     if (!n) return;
     const s = await c.createSession(n);
+    if (!s) return;   // the banner explains; keep the form open
     setName(''); setCreating(false);
     await c.openSession(s.id);
   };
@@ -32,6 +34,7 @@ export function StartScreen() {
   return (
     <main className="shell">
       <h1>eslogger viewer</h1>
+      <StoreErrorBanner />
       <p className="muted">Triage Apple eslogger captures. Everything stays in this browser; nothing is uploaded.</p>
 
       <section>
@@ -46,7 +49,7 @@ export function StartScreen() {
             <button type="button" onClick={() => { setCreating(false); setName(''); }}>Cancel</button>
           </form>
         )}
-        {c.sessions.length === 0 && !creating && <p className="muted">No sessions yet. Create one for each investigation.</p>}
+        {c.sessionsLoaded && c.sessions.length === 0 && !creating && <p className="muted">No sessions yet. Create one for each investigation.</p>}
         <ul className="list">
           {c.sessions.map(s => (
             <li key={s.id} className="row">

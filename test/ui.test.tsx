@@ -12,6 +12,7 @@ import { runLoad } from '../src/ingest/run';
 import type { Image } from '../src/model/types';
 import { latestImage } from '../src/model/util';
 import { App, SessionProvider, useSession, type SessionCtx } from '../src/ui/App';
+import { StoreErrorBanner } from '../src/ui/StoreErrorBanner';
 import { openStore, type CaptureRec, type Store, type Verdict } from '../src/session/store';
 import { fixture, type FixtureName } from './fixtures';
 
@@ -344,4 +345,125 @@ test('routine marks hide queue items; the count shows in the header', async () =
   expect(ctx.triage!.hiddenCount).toBeGreaterThan(0);
   expect(ctx.triage!.queue.length + ctx.triage!.hiddenCount).toBe(total);
   expect(screen.getByTestId('hidden')).toHaveTextContent(`${ctx.triage!.hiddenCount} routine hidden`);
+});
+
+// --- fix round 1 ----------------------------------------------------------------------------------------------
+
+test('a load that finishes after leaving the session writes nothing and leaves no progress behind', async () => {
+  const store = await openStore();
+  const a = await store.createSession('a');
+  const b = await store.createSession('b');
+  let report!: (bytes: number, total: number) => void;
+  let finish!: (c: LoadedCapture) => void;
+  runLoadMock.mockImplementation((_f, onProgress) => new Promise<LoadedCapture>((res) => { report = onProgress; finish = res; }));
+  render(<SessionProvider store={store}><Probe /></SessionProvider>);
+  await waitFor(() => { expect(ctx).toBeDefined(); });
+  await act(async () => { await ctx.openSession(a.id); });
+  let loading!: Promise<void>;
+  await act(async () => { loading = ctx.loadFiles([dropped('spritetree_demo.json')]); });
+  expect(ctx.progress).not.toBeNull();
+
+  act(() => { ctx.closeSession(); });          // "← Sessions"
+  await act(async () => { await ctx.openSession(b.id); });   // …and into another session
+  const demo = await loadFixture('spritetree_demo.json');
+  await act(async () => { report(100, 100); finish(demo); await loading; });
+
+  expect(ctx.progress).toBeNull();
+  expect(ctx.session!.id).toBe(b.id);
+  expect(ctx.capRecs).toHaveLength(0);
+  expect(ctx.captures.size).toBe(0);
+  expect(await store.listCaptures(a.id)).toHaveLength(0);
+  expect(await store.listCaptures(b.id)).toHaveLength(0);
+});
+
+test('a queued load of the old session is skipped and does not clear the new session\'s error', async () => {
+  const store = await openStore();
+  const a = await store.createSession('a');
+  const b = await store.createSession('b');
+  let finish!: (c: LoadedCapture) => void;
+  runLoadMock.mockImplementationOnce(() => new Promise<LoadedCapture>((res) => { finish = res; }));
+  render(<SessionProvider store={store}><Probe /></SessionProvider>);
+  await waitFor(() => { expect(ctx).toBeDefined(); });
+  await act(async () => { await ctx.openSession(a.id); });
+  let first!: Promise<void>; let second!: Promise<void>;
+  await act(async () => {
+    first = ctx.loadFiles([dropped('spritetree_demo.json')]);
+    second = ctx.loadFiles([dropped('shlayer.json')]);   // queued behind the first
+  });
+  act(() => { ctx.closeSession(); });
+  await act(async () => { await ctx.openSession(b.id); });
+  runLoadMock.mockRejectedValueOnce(new Error('boom in b'));
+  await act(async () => { void ctx.loadFiles([dropped('shlayer.json')]); });
+  await act(async () => { finish(await loadFixture('spritetree_demo.json')); await first; await second; });
+  expect(runLoadMock).toHaveBeenCalledTimes(2);   // a's queued shlayer run never started
+  expect(await store.listCaptures(a.id)).toHaveLength(0);
+  expect(ctx.loadError).toBe('boom in b');
+});
+
+/** A store whose listed methods fail. */
+const failing = async (fail: Partial<Record<keyof Store, string>>): Promise<Store> => {
+  const real = await openStore();
+  return new Proxy(real, {
+    get: (t, k: string) => (k in fail
+      ? () => Promise.reject(new Error(fail[k as keyof Store]))
+      : t[k as keyof Store]),
+  });
+};
+
+test('a failing setVerdict shows a banner and does not pretend the verdict was saved', async () => {
+  const real = await openStore();
+  const s = await real.createSession('ctx');
+  const store = await failing({ setVerdict: 'quota exceeded' });
+  render(<SessionProvider store={store}><Probe /><StoreErrorBanner /></SessionProvider>);
+  await waitFor(() => { expect(ctx).toBeDefined(); });
+  await act(async () => { await ctx.openSession(s.id); });
+  await act(async () => { await ctx.loadFiles([dropped('shlayer.json')]); });
+  const cap = ctx.captures.get(ctx.active!)!;
+  const procId = cap.analysis.queue.find(q => q.kind === 'process')!.procId!;
+  await act(async () => { await ctx.setVerdict(procId, 'confirmed', 'n'); });
+  expect(await screen.findByRole('alert')).toHaveTextContent(/Could not save the verdict: quota exceeded/);
+  expect(ctx.verdicts.size).toBe(0);
+  await user.click(screen.getByRole('button', { name: 'Dismiss' }));
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
+test('a failing touchSession is best-effort: the verdict is saved and shown, no banner', async () => {
+  const real = await openStore();
+  const s = await real.createSession('ctx');
+  const store = await failing({ touchSession: 'nope' });
+  render(<SessionProvider store={store}><Probe /><StoreErrorBanner /></SessionProvider>);
+  await waitFor(() => { expect(ctx).toBeDefined(); });
+  await act(async () => { await ctx.openSession(s.id); });
+  await act(async () => { await ctx.loadFiles([dropped('shlayer.json')]); });
+  const procId = ctx.capture!.analysis.queue.find(q => q.kind === 'process')!.procId!;
+  await act(async () => { await ctx.setVerdict(procId, 'confirmed'); });
+  expect(ctx.verdicts.get(procId)?.status).toBe('confirmed');
+  expect(await real.listVerdicts(s.id)).toHaveLength(1);
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
+test('a failing listSessions shows the error, not "No sessions yet"', async () => {
+  const store = await failing({ listSessions: 'IDB is broken' });
+  render(<App store={store} />);
+  expect(await screen.findByRole('alert')).toHaveTextContent(/Could not read sessions: IDB is broken/);
+  expect(screen.queryByText(/No sessions yet/)).not.toBeInTheDocument();
+});
+
+test('a failing createSession shows a banner on the start screen', async () => {
+  const store = await failing({ createSession: 'disk full' });
+  render(<App store={store} />);
+  await newSession('x');
+  expect(await screen.findByRole('alert')).toHaveTextContent(/Could not create the session: disk full/);
+});
+
+test('two setVerdict calls in one tick keep the note', async () => {
+  const { store, sessionId, demo } = await withSession();
+  const procId = demo.analysis.queue.find(q => q.kind === 'process')!.procId!;
+  await act(async () => {
+    const a = ctx.setVerdict(procId, 'confirmed', 'dropper');
+    const b = ctx.setVerdict(procId, 'benign');   // note omitted: must keep 'dropper'
+    await Promise.all([a, b]);
+  });
+  expect(await store.listVerdicts(sessionId, demo.fingerprint)).toMatchObject([{ status: 'benign', note: 'dropper' }]);
+  expect(ctx.verdicts.get(procId)).toMatchObject({ status: 'benign', note: 'dropper' });
 });

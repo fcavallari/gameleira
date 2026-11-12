@@ -22,8 +22,14 @@ export interface SessionCtx {
   // start screen
   sessions: Session[];
   captureCounts: Map<string, number>;
+  /** False until the session list was read successfully (so a failed read is not shown as "no sessions"). */
+  sessionsLoaded: boolean;
   persisted: boolean | null;
-  createSession(name: string): Promise<Session>;
+  /** Last failed store operation, shown as a banner on both screens until dismissed. */
+  storeError: string | null;
+  dismissStoreError(): void;
+  /** Resolves null when the store refused (the error is reported in `storeError`). */
+  createSession(name: string): Promise<Session | null>;
   renameSession(id: string, name: string): Promise<void>;
   deleteSession(id: string): Promise<void>;
   /** Parses a session export file and imports it as a NEW session. Rejects with a readable message. */
@@ -77,6 +83,8 @@ const message = (e: unknown): string => (e instanceof Error ? e.message : String
 
 export function SessionProvider({ store, children }: { store: Store; children: ReactNode }) {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const [storeError, setStoreError] = useState<string | null>(null);
   const [captureCounts, setCaptureCounts] = useState<Map<string, number>>(new Map());
   const [persisted, setPersisted] = useState<boolean | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -93,16 +101,25 @@ export function SessionProvider({ store, children }: { store: Store; children: R
   // Synchronous mirrors: async actions must see the session that is open NOW, not the one they were created in.
   const sessionId = useRef<string | null>(null);
   const openToken = useRef(0);
+  /** Bumped whenever the open session changes: work started under an older value must not touch state or the store. */
+  const gen = useRef(0);
+  /** Session verdicts, updated synchronously so two calls in one tick see each other. */
+  const verdictRef = useRef<Verdict[]>([]);
   const queue = useRef<Promise<void>>(Promise.resolve());
   const latest = useRef({ session, capRecs, captures, active, allVerdicts, routine });
   latest.current = { session, capRecs, captures, active, allVerdicts, routine };
 
+  const report = useCallback((what: string, e: unknown) => { setStoreError(`${what}: ${message(e)}`); }, []);
+
   const refreshSessions = useCallback(async () => {
-    const list = await store.listSessions();
-    const counts = await Promise.all(list.map(async s => [s.id, (await store.listCaptures(s.id)).length] as const));
-    setSessions(list);
-    setCaptureCounts(new Map(counts));
-  }, [store]);
+    try {
+      const list = await store.listSessions();
+      const counts = await Promise.all(list.map(async s => [s.id, (await store.listCaptures(s.id)).length] as const));
+      setSessions(list);
+      setCaptureCounts(new Map(counts));
+      setSessionsLoaded(true);
+    } catch (e) { report('Could not read sessions', e); }
+  }, [store, report]);
 
   const refreshPersisted = useCallback(async () => {
     try { setPersisted((await navigator.storage?.persisted?.()) ?? false); } catch { setPersisted(false); }
@@ -111,8 +128,12 @@ export function SessionProvider({ store, children }: { store: Store; children: R
   useEffect(() => { void refreshSessions(); void refreshPersisted(); }, [refreshSessions, refreshPersisted]);
 
   const createSession = useCallback(async (name: string) => {
-    const first = (await store.listSessions()).length === 0;
-    const s = await store.createSession(name);
+    let s: Session;
+    let first: boolean;
+    try {
+      first = (await store.listSessions()).length === 0;
+      s = await store.createSession(name);
+    } catch (e) { report('Could not create the session', e); return null; }
     if (first) {
       // Spec §3: sessions must survive closing the tab, so ask the browser not to evict them. Failure is not fatal.
       void (async () => {
@@ -122,11 +143,14 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     }
     await refreshSessions();
     return s;
-  }, [store, refreshSessions, refreshPersisted]);
+  }, [store, refreshSessions, refreshPersisted, report]);
 
   const closeSession = useCallback(() => {
     sessionId.current = null;
     openToken.current++;
+    gen.current++;
+    queue.current = Promise.resolve();
+    verdictRef.current = [];
     setSession(null); setCapRecs([]); setCaptures(new Map()); setActiveFp(null); setView('triage');
     setAllVerdicts([]); setRoutine([]); setSelected(null); setProgress(null); setLoadError(null);
     void refreshSessions();
@@ -134,26 +158,33 @@ export function SessionProvider({ store, children }: { store: Store; children: R
 
   const openSession = useCallback(async (id: string) => {
     const token = ++openToken.current;
-    const s = (await store.listSessions()).find(x => x.id === id);
-    if (!s) return;
-    const [recs, vs, rs] = await Promise.all([store.listCaptures(id), store.listVerdicts(id), store.listRoutine(id)]);
+    let s: Session | undefined;
+    let recs: CaptureRec[]; let vs: Verdict[]; let rs: RoutineRec[];
+    try {
+      s = (await store.listSessions()).find(x => x.id === id);
+      if (!s) return;
+      [recs, vs, rs] = await Promise.all([store.listCaptures(id), store.listVerdicts(id), store.listRoutine(id)]);
+    } catch (e) { report('Could not open the session', e); return; }
     if (token !== openToken.current) return;
+    gen.current++;   // loads still running for the previous session are now stale
+    queue.current = Promise.resolve();   // …and the new session's loads must not wait for them
     sessionId.current = id;
+    verdictRef.current = vs;
     setSession(s); setCapRecs(recs); setAllVerdicts(vs); setRoutine(rs);
     setCaptures(new Map()); setActiveFp(null); setView('triage'); setSelected(null); setProgress(null); setLoadError(null);
-  }, [store]);
+  }, [store, report]);
 
   const renameSession = useCallback(async (id: string, name: string) => {
-    await store.renameSession(id, name);
+    try { await store.renameSession(id, name); } catch (e) { report('Could not rename the session', e); return; }
     if (sessionId.current === id) setSession(s => (s ? { ...s, name } : s));
     await refreshSessions();
-  }, [store, refreshSessions]);
+  }, [store, refreshSessions, report]);
 
   const deleteSession = useCallback(async (id: string) => {
-    await store.deleteSession(id);
+    try { await store.deleteSession(id); } catch (e) { report('Could not delete the session', e); return; }
     if (sessionId.current === id) closeSession();
     else await refreshSessions();
-  }, [store, closeSession, refreshSessions]);
+  }, [store, closeSession, refreshSessions, report]);
 
   const importSessionFile = useCallback(async (file: File) => {
     let data: unknown;
@@ -163,19 +194,22 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     return s;
   }, [store, refreshSessions]);
 
-  const loadOne = useCallback(async (sid: string, file: File): Promise<void> => {
+  /** `g` is the session generation the load started under; every state or store write re-checks it. */
+  const loadOne = useCallback(async (sid: string, g: number, file: File): Promise<void> => {
+    const live = () => gen.current === g;
     setProgress({ fileName: file.name, bytes: 0, total: file.size });
-    const cap = await runLoad(file, (bytes, total) => setProgress({ fileName: file.name, bytes, total }));
+    const cap = await runLoad(file, (bytes, total) => { if (live()) setProgress({ fileName: file.name, bytes, total }); });
+    if (!live()) return;   // the user left the session while it was loading: drop the result
     const rec: CaptureRec = {
       sessionId: sid, fingerprint: cap.fingerprint, fileName: cap.fileName || file.name, size: cap.size,
       events: cap.model.stats.events, processes: cap.model.processes.size, flagged: cap.analysis.queue.length, added: now(),
     };
     // Same fingerprint as a stored capture: the store updates size and counts and keeps the verdicts' key.
     await store.upsertCapture(rec);
-    await store.touchSession(sid);
-    if (sessionId.current !== sid) return;   // the user left the session while it was loading
+    store.touchSession(sid).catch(() => { /* best-effort: only the "updated" time is lost */ });
+    if (!live()) return;
     const recs = await store.listCaptures(sid);
-    if (sessionId.current !== sid) return;
+    if (!live()) return;
     setCapRecs(recs);
     setCaptures(m => new Map(m).set(cap.fingerprint, cap));
     setActiveFp(cap.fingerprint);
@@ -185,15 +219,19 @@ export function SessionProvider({ store, children }: { store: Store; children: R
   const loadFiles = useCallback((files: File[]): Promise<void> => {
     const sid = sessionId.current;
     if (!sid || files.length === 0) return Promise.resolve();
-    // Serialised: a drop while another file is still parsing waits its turn.
+    const g = gen.current;
+    // Serialised: a drop while another file is still parsing waits its turn. A run queued under an older
+    // generation does nothing when its turn comes.
     const run = async () => {
+      if (gen.current !== g) return;
       const errors: string[] = [];
       setLoadError(null);
       for (const file of files) {
-        try { await loadOne(sid, file); }
+        if (gen.current !== g) return;
+        try { await loadOne(sid, g, file); }
         catch (e) { errors.push(files.length > 1 ? `${file.name}: ${message(e)}` : message(e)); }
       }
-      if (sessionId.current === sid) { setProgress(null); setLoadError(errors.length ? errors.join('\n') : null); }
+      if (gen.current === g) { setProgress(null); setLoadError(errors.length ? errors.join('\n') : null); }
     };
     queue.current = queue.current.then(run);
     return queue.current;
@@ -226,7 +264,7 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     [capture, routineKeys]);
 
   const setVerdict = useCallback(async (procId: ProcId, status: Status, note?: string) => {
-    const { session: s, active: fp, captures: caps, allVerdicts: all } = latest.current;
+    const { session: s, active: fp, captures: caps } = latest.current;
     const cap = fp ? caps.get(fp) : undefined;
     const p = cap?.model.processes.get(procId);
     if (!s || !fp || !cap || !p) return;
@@ -234,7 +272,8 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     const findings = cap.analysis.findings.get(procId) ?? [];
     const severity = findings.reduce<Severity | null>(
       (best, f) => (best === null || SEVERITY_RANK[f.severity] > SEVERITY_RANK[best] ? f.severity : best), null);
-    const prev = all.find(v => v.fingerprint === fp && v.procKey === procId);
+    const same = (x: Verdict) => x.fingerprint === fp && x.procKey === procId;
+    const prev = verdictRef.current.find(same);
     const v: Verdict = {
       sessionId: s.id, fingerprint: fp, procKey: procId, status, note: note ?? prev?.note ?? '', updated: now(),
       snapshot: {
@@ -242,12 +281,27 @@ export function SessionProvider({ store, children }: { store: Store; children: R
         ruleIds: [...new Set(findings.map(f => f.ruleId))], severity, startTime: p.startTime,
       },
     };
-    await store.setVerdict(v);
-    await store.touchSession(s.id);
-    if (sessionId.current !== s.id) return;
-    setAllVerdicts(list => [...list.filter(x => !(x.fingerprint === fp && x.procKey === procId)), v]);
-    setSession(cur => (cur ? { ...cur, updated: v.updated } : cur));
-  }, [store]);
+    // Synchronous, so a second call in the same tick sees this verdict (and its note); undone if the write fails.
+    verdictRef.current = [...verdictRef.current.filter(x => !same(x)), v];
+    const open = () => sessionId.current === s.id;
+    try {
+      await store.setVerdict(v);
+    } catch (e) {
+      if (open()) {
+        if (verdictRef.current.includes(v)) {
+          verdictRef.current = [...verdictRef.current.filter(x => x !== v), ...(prev ? [prev] : [])];
+          setAllVerdicts(verdictRef.current);
+        }
+        report('Could not save the verdict', e);
+      }
+      return;
+    }
+    if (open()) {
+      setAllVerdicts(verdictRef.current);
+      setSession(cur => (cur ? { ...cur, updated: v.updated } : cur));
+    }
+    store.touchSession(s.id).catch(() => { /* best-effort: only the "updated" time is lost */ });
+  }, [store, report]);
 
   const addRoutine = useCallback(async (img: Image): Promise<boolean> => {
     const sid = sessionId.current;
@@ -259,20 +313,22 @@ export function SessionProvider({ store, children }: { store: Store; children: R
       return false;
     }
     const rec: RoutineRec = { sessionId: sid, programKey: key, label: name, added: now() };
-    await store.addRoutine(rec);
+    try { await store.addRoutine(rec); } catch (e) { report('Could not save the routine mark', e); return false; }
     if (sessionId.current === sid) setRoutine(list => [...list.filter(r => r.programKey !== key), rec]);
     return true;
-  }, [store]);
+  }, [store, report]);
 
   const removeRoutine = useCallback(async (key: string) => {
     const sid = sessionId.current;
     if (!sid) return;
-    await store.removeRoutine(sid, key);
+    try { await store.removeRoutine(sid, key); } catch (e) { report('Could not remove the routine mark', e); return; }
     if (sessionId.current === sid) setRoutine(list => list.filter(r => r.programKey !== key));
-  }, [store]);
+  }, [store, report]);
+
+  const dismissStoreError = useCallback(() => { setStoreError(null); }, []);
 
   const value: SessionCtx = {
-    store, sessions, captureCounts, persisted, createSession, renameSession, deleteSession, importSessionFile,
+    store, sessions, sessionsLoaded, captureCounts, persisted, storeError, dismissStoreError, createSession, renameSession, deleteSession, importSessionFile,
     session, capRecs, captures, active, capture, view, allVerdicts, verdicts, routine, routineKeys, triage,
     selected, progress, loadError, openSession, closeSession, loadFiles, setActive, setView,
     setVerdict, addRoutine, removeRoutine, selectProc, showInTree,
