@@ -116,3 +116,21 @@ kbd { font: 11px var(--mono); border: 1px solid var(--line); border-radius: 4px;
 button[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 button:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 900px) { .triage { grid-template-columns: minmax(0, 1fr); } }
+
+/* Tree view */
+.tscroll:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.trow { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; padding-right: 8px; cursor: pointer;
+  border-bottom: 1px solid var(--line); font: 12px var(--mono); overflow: hidden; }
+.trow:hover { background: var(--bg); }
+.trow.sel { background: var(--drop); box-shadow: inset 3px 0 0 var(--accent); font-weight: 600; }
+.trow.routine { opacity: .55; }
+.trow.ghost .tname { font-style: italic; color: var(--muted); }
+.trow.fold { color: var(--muted); background: var(--bg); font-style: italic; }
+.trow .twisty { flex: none; width: 12px; text-align: center; color: var(--muted); }
+.trow .badge { flex: none; width: 40px; text-align: center; font-family: var(--font); }
+.trow .status { flex: none; width: 14px; text-align: center; }
+.tname { flex: 0 1 auto; min-width: 0; }
+.tpid { flex: none; margin-left: auto; }
+.trow .chain-mark { flex: none; }
+.triage.tree { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
+@media (max-width: 900px) { .triage.tree { grid-template-columns: minmax(0, 1fr); } }

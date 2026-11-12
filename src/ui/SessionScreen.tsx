@@ -1,6 +1,7 @@
 import { useState, type DragEvent } from 'react';
 import { ConfirmedTab } from './ConfirmedTab';
 import { StoreErrorBanner } from './StoreErrorBanner';
+import { TreeView } from './TreeView';
 import { TriageView } from './TriageView';
 import { useSession, type View } from './session-context';
 
@@ -138,7 +139,7 @@ export function SessionScreen() {
         ) : c.view === 'triage' ? (
           <TriageView />
         ) : (
-          <p className="placeholder">Tree: {c.capture.model.processes.size} processes</p>
+          <TreeView />
         )}
       </section>
     </main>

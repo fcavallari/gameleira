@@ -10,6 +10,7 @@ import { importSession } from '../session/export';
 import { applyRoutine, isRiskyRoutine, programKey } from '../session/routine';
 import type { CaptureRec, RoutineRec, Session, Status, Store, Verdict } from '../session/store';
 import { fetchDevFixture } from './dev';
+import { DEFAULT_FILTERS, type TriageFilters } from './triage-model';
 
 export type View = 'triage' | 'tree' | 'confirmed';
 export interface Progress { fileName: string; bytes: number; total: number }
@@ -54,6 +55,13 @@ export interface SessionCtx {
   /** The active capture's queue with routine programs removed, and how many were hidden. */
   triage: { queue: QueueItem[]; hiddenCount: number } | null;
   selected: ProcId | null;
+  /** The process "Show in tree" asked for, until the user picks another one. */
+  focusId: ProcId | null;
+  /** Changes on every showInTree call, so asking for the same process again is seen. */
+  focusNonce: number;
+  /** Triage filters and search. They live here so they survive a trip to another tab. */
+  triageFilters: TriageFilters;
+  updateTriageFilters(patch: Partial<TriageFilters>): void;
   progress: Progress | null;
   loadError: string | null;
   openSession(id: string): Promise<void>;
@@ -95,6 +103,8 @@ export function SessionProvider({ store, children }: { store: Store; children: R
   const [allVerdicts, setAllVerdicts] = useState<Verdict[]>([]);
   const [routine, setRoutine] = useState<RoutineRec[]>([]);
   const [selected, setSelected] = useState<ProcId | null>(null);
+  const [focus, setFocus] = useState<{ id: ProcId; n: number } | null>(null);
+  const [triageFilters, setTriageFilters] = useState<TriageFilters>(DEFAULT_FILTERS);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -152,7 +162,7 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     queue.current = Promise.resolve();
     verdictRef.current = [];
     setSession(null); setCapRecs([]); setCaptures(new Map()); setActiveFp(null); setView('triage');
-    setAllVerdicts([]); setRoutine([]); setSelected(null); setProgress(null); setLoadError(null);
+    setAllVerdicts([]); setRoutine([]); setSelected(null); setFocus(null); setTriageFilters(DEFAULT_FILTERS); setProgress(null); setLoadError(null);
     void refreshSessions();
   }, [refreshSessions]);
 
@@ -171,7 +181,7 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     sessionId.current = id;
     verdictRef.current = vs;
     setSession(s); setCapRecs(recs); setAllVerdicts(vs); setRoutine(rs);
-    setCaptures(new Map()); setActiveFp(null); setView('triage'); setSelected(null); setProgress(null); setLoadError(null);
+    setCaptures(new Map()); setActiveFp(null); setView('triage'); setSelected(null); setFocus(null); setTriageFilters(DEFAULT_FILTERS); setProgress(null); setLoadError(null);
   }, [store, report]);
 
   const renameSession = useCallback(async (id: string, name: string) => {
@@ -214,6 +224,7 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     setCaptures(m => new Map(m).set(cap.fingerprint, cap));
     setActiveFp(cap.fingerprint);
     setSelected(null);
+    setFocus(null);
   }, [store]);
 
   const loadFiles = useCallback((files: File[]): Promise<void> => {
@@ -250,9 +261,14 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     })().catch(e => { setLoadError(message(e)); });
   }, [store, openSession, loadFiles]);
 
-  const setActive = useCallback((fp: string) => { setActiveFp(fp); setSelected(null); }, []);
-  const selectProc = useCallback((id: ProcId | null) => { setSelected(id); }, []);
-  const showInTree = useCallback((id: ProcId) => { setSelected(id); setView('tree'); }, []);
+  const setActive = useCallback((fp: string) => { setActiveFp(fp); setSelected(null); setFocus(null); }, []);
+  const selectProc = useCallback((id: ProcId | null) => { setSelected(id); setFocus(null); }, []);
+  const showInTree = useCallback((id: ProcId) => {
+    setSelected(id);
+    setFocus(f => ({ id, n: (f?.n ?? 0) + 1 }));
+    setView('tree');
+  }, []);
+  const updateTriageFilters = useCallback((patch: Partial<TriageFilters>) => { setTriageFilters(f => ({ ...f, ...patch })); }, []);
 
   const capture = active ? captures.get(active) ?? null : null;
   const verdicts = useMemo(
@@ -333,7 +349,7 @@ export function SessionProvider({ store, children }: { store: Store; children: R
   const value: SessionCtx = {
     store, sessions, sessionsLoaded, captureCounts, persisted, storeError, dismissStoreError, createSession, renameSession, deleteSession, importSessionFile,
     session, capRecs, captures, active, capture, view, allVerdicts, verdicts, routine, routineKeys, triage,
-    selected, progress, loadError, openSession, closeSession, loadFiles, setActive, setView,
+    selected, focusId: focus?.id ?? null, focusNonce: focus?.n ?? 0, triageFilters, updateTriageFilters, progress, loadError, openSession, closeSession, loadFiles, setActive, setView,
     setVerdict, addRoutine, removeRoutine, selectProc, showInTree,
   };
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

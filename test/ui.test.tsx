@@ -10,10 +10,14 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { loadCapture, type LoadedCapture } from '../src/ingest/load';
 import { runLoad } from '../src/ingest/run';
-import type { Image } from '../src/model/types';
-import { latestImage } from '../src/model/util';
+import type { CaptureModel, Image, Process } from '../src/model/types';
+import { basename, latestImage } from '../src/model/util';
+import { forestOf, flatten, keepSet, makeFoldInfo, revealKeys } from '../src/ui/tree-model';
 import { App, SessionContext, SessionProvider, useSession, type SessionCtx } from '../src/ui/App';
+import { SessionScreen } from '../src/ui/SessionScreen';
+import { TreeView } from '../src/ui/TreeView';
 import { TriageView } from '../src/ui/TriageView';
+import { DEFAULT_FILTERS, type TriageFilters } from '../src/ui/triage-model';
 import { applyRoutine, programKey } from '../src/session/routine';
 import { procByPid } from './helpers';
 import { StoreErrorBanner } from '../src/ui/StoreErrorBanner';
@@ -90,7 +94,7 @@ test('loads a capture: header counts, tabs and placeholders', async () => {
   if (flagged === 0) expect(screen.getByText(/nothing flagged/i)).toBeInTheDocument();
   else expect(queue.getAllByRole('option')).toHaveLength(flagged);
   await user.click(screen.getByRole('tab', { name: 'Tree' }));
-  expect(screen.getByText(/^Tree: \d+ processes$/)).toBeInTheDocument();
+  expect(screen.getByRole('tree', { name: 'Process tree' })).toBeInTheDocument();
   await user.click(screen.getByRole('tab', { name: 'Confirmed' }));
   expect(screen.getByText(/nothing confirmed/i)).toBeInTheDocument();
 });
@@ -491,13 +495,15 @@ function renderTriage(cap: LoadedCapture, opts: { routineKeys?: Set<string> } = 
   function Harness() {
     const [selected, setSelected] = useState<string | null>(null);
     const [verdicts, setVerdicts] = useState(new Map<string, Verdict>());
+    const [triageFilters, setFilters] = useState(DEFAULT_FILTERS);
     const triage = useMemo(() => applyRoutine(cap.analysis, cap.model, routineKeys), []);
     mocks.setVerdict.mockImplementation((id: string, status: Status, note?: string) => {
       setVerdicts(m => new Map(m).set(id, { ...seedVerdict('s', cap.fingerprint, id, status, note ?? m.get(id)?.note ?? '') }));
       return Promise.resolve();
     });
     const value = { capture: cap, active: cap.fingerprint, captures: new Map([[cap.fingerprint, cap]]), triage, verdicts,
-      routineKeys, selected, selectProc: setSelected, ...mocks } as unknown as SessionCtx;
+      routineKeys, selected, selectProc: setSelected, triageFilters,
+      updateTriageFilters: (patch: Partial<TriageFilters>) => { setFilters(f => ({ ...f, ...patch })); }, ...mocks } as unknown as SessionCtx;
     return <SessionContext.Provider value={value}><TriageView /></SessionContext.Provider>;
   }
   render(<Harness />);
@@ -691,3 +697,254 @@ test('setVerdict accepts a persistence-only item by its queue key', async () => 
   expect(v!.snapshot).toMatchObject({ name: 'persistence: com.google.GoogleUpdater.wake.plist', severity: 'med', ruleIds: ['persistence-item'] });
   expect(ctx.verdicts.get(item.key)?.status).toBe('benign');
 }, 60_000);
+
+// --- Tree view (Task 11) ------------------------------------------------------------------------------------------
+
+/** A real session on es-lab (parsed once, see loadEsLab), opened on the Tree tab. */
+async function treeSession(view: 'tree' | 'triage' = 'tree'): Promise<LoadedCapture> {
+  const cap = await loadEsLab();
+  runLoadMock.mockImplementation(() => Promise.resolve(cap));
+  const store = await openStore();
+  const s = await store.createSession('tree');
+  function Screen() { return useSession().session ? <SessionScreen /> : null; }
+  render(<SessionProvider store={store}><Probe /><Screen /></SessionProvider>);
+  await waitFor(() => { expect(ctx).toBeDefined(); });
+  await act(async () => { await ctx.openSession(s.id); });
+  await act(async () => { await ctx.loadFiles([dropped('es-lab.jsonl')]); });
+  act(() => { ctx.setView(view); });
+  return cap;
+}
+
+const items = (): HTMLElement[] => screen.getAllByRole('treeitem');
+const itemWith = (re: RegExp): HTMLElement | undefined => items().find(el => re.test(el.textContent ?? ''));
+const level = (el: HTMLElement): number => Number(el.getAttribute('aria-level'));
+/** Flat rows: the parent is the nearest earlier row one level up. */
+function parentRow(el: HTMLElement): HTMLElement | undefined {
+  const all = items();
+  for (let i = all.indexOf(el) - 1; i >= 0; i--) if (level(all[i]!) === level(el) - 1) return all[i];
+  return undefined;
+}
+const procNamed = (m: CaptureModel, name: string): Process =>
+  [...m.processes.values()].find(p => basename(latestImage(p)?.path ?? null) === name)!;
+
+test('noise folded with counts', async () => {
+  await treeSession();
+  expect(await screen.findByText(/routine: .*docker-tools ×\d+/)).toBeInTheDocument();
+  expect(screen.getByRole('tree', { name: 'Process tree' })).toBeInTheDocument();
+}, 60_000);
+
+test('show in tree focuses osascript under zsh', async () => {
+  const cap = await treeSession();
+  act(() => { ctx.showInTree(procByPid(cap.model, 40753).id); });
+  const sel = await screen.findByRole('treeitem', { selected: true });
+  expect(sel).toHaveTextContent('osascript');
+  expect(parentRow(sel)).toHaveTextContent('zsh');
+  expect(screen.getAllByRole('treeitem', { selected: true })).toHaveLength(1);
+  expect(screen.getByRole('region', { name: 'Selected process' })).toHaveTextContent('osascript');
+}, 60_000);
+
+test('mode switch moves sleep 90 under launchd', async () => {
+  await treeSession();
+  const sleep = await screen.findByText(/sleep 90/);
+  expect(parentRow(sleep.closest('[role="treeitem"]')!)).toHaveTextContent('zsh');   // original: its subshell
+  await user.selectOptions(screen.getByLabelText(/parent mode/i), 'current');
+  const moved = (await screen.findByText(/sleep 90/)).closest('[role="treeitem"]') as HTMLElement;
+  expect(parentRow(moved)).toHaveTextContent(/launchd/);
+}, 60_000);
+
+test('Show in tree reveals an unflagged process inside a fold, opening just that fold', async () => {
+  const cap = await treeSession();
+  const target = procNamed(cap.model, 'docker-tools');
+  expect(cap.analysis.queue.some(q => q.procId === target.id)).toBe(false);
+  expect(screen.queryByText(/^docker-tools/)).not.toBeInTheDocument();
+  act(() => { ctx.showInTree(target.id); });
+  const sel = await screen.findByRole('treeitem', { selected: true });
+  expect(sel).toHaveTextContent('docker-tools');
+  expect(level(sel)).toBeGreaterThan(1);
+  const folds = items().filter(el => /^routine:/.test(el.textContent?.replace(/^[▸▾\s]+/, '') ?? ''));
+  expect(folds.filter(el => el.getAttribute('aria-expanded') === 'true')).toHaveLength(1);   // the other fold stays closed
+  expect(folds.some(el => el.getAttribute('aria-expanded') === 'false')).toBe(true);
+}, 60_000);
+
+test('Show in tree from the triage screen (key t) lands on the process', async () => {
+  await treeSession('triage');
+  await user.click(await screen.findByText(/display dialog/));
+  await user.keyboard('t');
+  expect(await screen.findByRole('treeitem', { selected: true })).toHaveTextContent('osascript');
+  await user.click(screen.getByRole('tab', { name: 'Triage' }));
+  expect(await screen.findByRole('listbox', { name: 'Flagged processes' })).toBeInTheDocument();
+}, 60_000);
+
+test('Show in tree on a ghost parent keeps it visible with its pre-capture label', async () => {
+  const cap = await treeSession();
+  const ghost = procByPid(cap.model, 35212);
+  act(() => { ctx.showInTree(ghost.id); });
+  expect(await screen.findByRole('treeitem', { selected: true })).toHaveTextContent('pid 35212 · started before capture');
+}, 60_000);
+
+test('a fold row expands on click and lists what it counted; Fold routine off shows everything unfolded', async () => {
+  await treeSession();
+  const fold = (await screen.findByText(/routine: .*docker-tools/)).closest('[role="treeitem"]') as HTMLElement;
+  expect(fold).toHaveAttribute('aria-expanded', 'false');
+  expect(fold).toHaveTextContent(/\d+ processes/);
+  const before = items().length;
+  await user.click(fold);
+  expect(fold).toHaveAttribute('aria-expanded', 'true');
+  expect(items().length).toBeGreaterThan(before + 1);
+  expect(items().some(el => level(el) === level(fold) + 1 && el.previousElementSibling === fold)).toBe(true);   // its members, one level down
+
+  await user.click(screen.getByRole('checkbox', { name: /fold routine/i }));
+  expect(screen.queryByText(/routine: /)).not.toBeInTheDocument();
+}, 60_000);
+
+test('marking a flagged program routine folds it, with the count going up by one', async () => {
+  const cap = await treeSession();
+  const osa = procByPid(cap.model, 40753);
+  const foldUnderZsh = (): HTMLElement => {
+    const zsh = itemWith(/^[▸▾\s]*zsh/)!;
+    const all = items();
+    return all.slice(all.indexOf(zsh)).find(el => /^[▸▾\s]*routine:/.test(el.textContent ?? '') && level(el) === level(zsh) + 1)!;
+  };
+  const total = (el: HTMLElement): number => Number(/(\d+) processes/.exec(el.textContent ?? '')![1]);
+  await screen.findByText(/osascript/);
+  const before = total(foldUnderZsh());
+  await act(async () => { await ctx.addRoutine(latestImage(osa)!); });
+  await waitFor(() => { expect(itemWith(/osascript/)).toBeUndefined(); });
+  expect(total(foldUnderZsh())).toBe(before + 1);
+  await user.click(foldUnderZsh());
+  expect(itemWith(/osascript/)).toBeDefined();
+}, 60_000);
+
+test('search keeps matches and their ancestors, hides the rest, and says so', async () => {
+  const cap = await treeSession();
+  await user.type(screen.getByRole('textbox', { name: /search/i }), 'osascript');
+  await waitFor(() => { expect(screen.queryByText(/routine: /)).not.toBeInTheDocument(); });
+  const chain = items().map(el => el.textContent!.replace(/^[▸▾\s]+/, ''));
+  expect(chain).toHaveLength(3);   // ghost 35212 > zsh 35213 > osascript
+  expect(chain[2]).toMatch(/osascript/);
+  expect(screen.getByText(/1 match/)).toBeInTheDocument();
+  await user.clear(screen.getByRole('textbox', { name: /search/i }));
+  expect(await screen.findByText(/routine: .*docker-tools/)).toBeInTheDocument();
+  expect(cap).toBeDefined();
+}, 60_000);
+
+test('clearing the search keeps the selected process on screen even when it sits in a fold', async () => {
+  await treeSession();
+  await user.type(screen.getByRole('textbox', { name: /search/i }), 'docker-tools');
+  await user.click((await screen.findAllByText(/^docker-tools/))[0]!);
+  await user.clear(screen.getByRole('textbox', { name: /search/i }));
+  expect(await screen.findByRole('treeitem', { selected: true })).toHaveTextContent('docker-tools');
+  expect(await screen.findByText(/routine: .*docker-tools/)).toBeInTheDocument();
+}, 60_000);
+
+test('flag badges show the highest severity, status icons follow verdicts, arrow keys move the selection', async () => {
+  const cap = await treeSession();
+  const osa = procByPid(cap.model, 40753);
+  const row = await screen.findByText(/osascript/);
+  const item = row.closest('[role="treeitem"]') as HTMLElement;
+  expect(within(item).getByText('high')).toBeInTheDocument();
+  await user.click(item);
+  expect(ctx.selected).toBe(osa.id);
+  await act(async () => { await ctx.setVerdict(osa.id, 'confirmed'); });
+  expect(within(screen.getByRole('treeitem', { selected: true })).getByLabelText('confirmed')).toBeInTheDocument();
+  await user.keyboard('{ArrowUp}');
+  expect(screen.getByRole('treeitem', { selected: true })).not.toHaveTextContent('osascript');
+}, 60_000);
+
+test('switching the mode keeps the selected process on screen', async () => {
+  const cap = await treeSession();
+  const target = procNamed(cap.model, 'docker-tools');
+  act(() => { ctx.showInTree(target.id); });
+  await screen.findByRole('treeitem', { selected: true });
+  await user.selectOptions(screen.getByLabelText(/parent mode/i), 'responsible');
+  expect(await screen.findByRole('treeitem', { selected: true })).toHaveTextContent('docker-tools');
+}, 60_000);
+
+test('triage filters and search survive a trip to another tab', async () => {
+  render(<App />);
+  await newSession('lab');
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('spritetree_demo.json'));
+  await screen.findByRole('listbox', { name: 'Flagged processes' });
+  await user.type(screen.getByRole('textbox', { name: /search/i }), 'curl');
+  await user.click(screen.getByRole('checkbox', { name: 'low' }));
+  await user.click(screen.getByRole('radio', { name: /^unreviewed$/i }));
+  await user.click(screen.getByRole('tab', { name: 'Tree' }));
+  expect(await screen.findByRole('tree', { name: 'Process tree' })).toBeInTheDocument();
+  await user.click(screen.getByRole('tab', { name: 'Triage' }));
+  expect(screen.getByRole('textbox', { name: /search/i })).toHaveValue('curl');
+  expect(screen.getByRole('checkbox', { name: 'low' })).not.toBeChecked();
+  expect(screen.getByRole('radio', { name: /^unreviewed$/i })).toBeChecked();
+});
+
+test('showInTree sets focusId, and picking another process clears it', async () => {
+  await withSession();
+  act(() => { ctx.showInTree('2:2'); });
+  expect(ctx.focusId).toBe('2:2');
+  const n = ctx.focusNonce;
+  act(() => { ctx.showInTree('2:2'); });
+  expect(ctx.focusNonce).toBeGreaterThan(n);
+  act(() => { ctx.selectProc('3:3'); });
+  expect(ctx.focusId).toBeNull();
+});
+
+// --- tree model on hand-built captures --------------------------------------------------------------------------
+
+const hand = (id: string, pid: number, parent: string | null, name: string, seq: number): Process => ({
+  id, pid, ghost: false, forkParent: null, originalPpid: null, ppid: null, parentToken: null, responsibleToken: null,
+  originalParent: parent, currentParent: parent, responsible: parent, startTime: null, exitTime: null, firstSeq: seq, fileOps: [],
+  images: [img({ token: id, path: `/bin/${name}`, args: [name] })],
+});
+const handModel = (ps: Process[]): CaptureModel => ({
+  processes: new Map(ps.map(p => [p.id, p])), tokenIndex: new Map(), persistence: [],
+  stats: { lines: 0, events: 0, badLines: 0, otherEvents: {}, versions: [], firstSeq: null, firstTime: null, lastTime: null },
+});
+/** r > c1, c2; and a parent cycle a > b > a with b's child leaf (none of the three is reachable from a root). */
+const cyclic = (): CaptureModel => handModel([
+  hand('1:1', 1, null, 'root', 1), hand('2:1', 2, '1:1', 'c1', 2), hand('3:1', 3, '1:1', 'c2', 3),
+  hand('4:1', 4, '5:1', 'a', 4), hand('5:1', 5, '4:1', 'b', 5), hand('6:1', 6, '5:1', 'leaf', 6),
+]);
+
+test('forestOf is built once per capture and mode, and places every process exactly once even with a parent cycle', () => {
+  const m = cyclic();
+  expect(forestOf(m, 'original')).toBe(forestOf(m, 'original'));
+  expect(forestOf(m, 'current')).not.toBe(forestOf(m, 'original'));
+  const f = forestOf(m, 'original');
+  expect(f.unreachable).toBe(3);
+  expect([...f.kids.values()].flat().sort()).toEqual([...m.processes.keys()].sort());
+  expect(f.parent.size).toBe(m.processes.size);
+});
+
+test('a parent cycle shows as a grey "unreachable (parent cycle)" group that lists its members', async () => {
+  const model = cyclic();
+  const cap = { model, analysis: { queue: [], findings: new Map(), contextOnly: new Map() }, fingerprint: 'cyc', fileName: 'c.jsonl', size: 0 } as unknown as LoadedCapture;
+  function Harness() {
+    const [selected, setSelected] = useState<string | null>(null);
+    const triage = useMemo(() => applyRoutine(cap.analysis, cap.model, new Set()), []);
+    const value = { capture: cap, active: 'cyc', captures: new Map(), triage, verdicts: new Map(), routineKeys: new Set(), selected, selectProc: setSelected,
+      focusId: null, focusNonce: 0, showInTree: vi.fn() } as unknown as SessionCtx;
+    return <SessionContext.Provider value={value}><TreeView /></SessionContext.Provider>;
+  }
+  render(<Harness />);
+  const group = await screen.findByText(/unreachable \(parent cycle\) ×3/);
+  const names = () => items().map(el => el.textContent!.replace(/^[▸▾\s]+/, ''));
+  expect(names().some(n => /^a\b/.test(n))).toBe(false);
+  await user.click(group);
+  for (const n of ['a', 'b', 'leaf']) expect(names().some(t => new RegExp(`^${n}\\b`).test(t))).toBe(true);
+  expect(names().filter(t => /^(root|c1|c2|routine)/.test(t)).length).toBeGreaterThan(0);
+});
+
+test('flatten: every process is a row or counted in a fold row; reveal opens only the fold the target sits in', () => {
+  const m = cyclic();
+  const f = forestOf(m, 'original');
+  const keep = keepSet(f, ['2:1']);
+  const fi = makeFoldInfo(m, f, keep);
+  const base = { forest: f, keep, fold: true, foldInfo: fi, visible: null };
+  const { rows, folded, foldRows } = flatten({ ...base, overrides: new Map() });
+  const nodes = rows.filter(r => r.kind === 'node').length;
+  expect(rows.map(r => r.kind)).toEqual(['node', 'node', 'fold', 'group']);   // root, c1 (flagged), fold of c2, cycle group
+  expect(nodes + folded + 3).toBe(m.processes.size);   // the group hides 3 more, counted in its own row
+  expect(foldRows).toBe(1);
+  expect(revealKeys(f, keep, true, '3:1')).toEqual(['f:1:1', 'n:1:1']);   // the fold it sits in, and its parent
+  expect(revealKeys(f, keep, false, '3:1')).toEqual(['n:1:1']);
+  expect(revealKeys(f, keep, true, '6:1')).toEqual(['n:5:1', 'n:4:1', 'g:unreachable']);   // leaf < b < a, the group's first member
+});

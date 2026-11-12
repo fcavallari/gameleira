@@ -3,6 +3,16 @@ import { displayName } from '../model/relations';
 import type { Process } from '../model/types';
 import { basename } from '../model/util';
 import type { QueueItem } from '../rules/engine';
+import type { Severity } from '../rules/rules';
+import type { Status } from '../session/store';
+
+export interface TriageFilters {
+  status: 'all' | Status;
+  sev: Set<Severity>;
+  search: string;
+  showHidden: boolean;
+}
+export const DEFAULT_FILTERS: TriageFilters = { status: 'all', sev: new Set<Severity>(['high', 'med', 'low']), search: '', showHidden: false };
 
 /** Verdicts are keyed by the process id; a persistence-only item has none, so it uses its queue key (`i:<id>`). */
 export const verdictKey = (q: QueueItem): string => q.procId ?? q.key;

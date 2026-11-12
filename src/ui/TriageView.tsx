@@ -2,14 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ProcId } from '../model/types';
 import type { QueueItem } from '../rules/engine';
 import type { Severity } from '../rules/rules';
-import type { Status } from '../session/store';
 import { DetailPane } from './DetailPane';
 import { QueueList, type QueueRow } from './QueueList';
 import { useSession } from './session-context';
-import { haystack, itemArgs, itemName, verdictKey } from './triage-model';
+import { haystack, itemArgs, itemName, verdictKey, type TriageFilters } from './triage-model';
 
-type StatusFilter = 'all' | Status;
-const STATUS_FILTERS: StatusFilter[] = ['all', 'unreviewed', 'confirmed', 'benign'];
+const STATUS_FILTERS: TriageFilters['status'][] = ['all', 'unreviewed', 'confirmed', 'benign'];
 const SEVERITIES: Severity[] = ['high', 'med', 'low'];
 
 const NON_TEXT_INPUTS = new Set(['radio', 'checkbox', 'button', 'submit', 'reset', 'range']);
@@ -26,10 +24,8 @@ const ownsArrows = (t: EventTarget | null): boolean => (t as HTMLInputElement | 
 export function TriageView() {
   const c = useSession();
   const { capture, triage, verdicts, selected } = c;
-  const [status, setStatus] = useState<StatusFilter>('all');
-  const [sev, setSev] = useState<Set<Severity>>(new Set(SEVERITIES));
-  const [search, setSearch] = useState('');
-  const [showHidden, setShowHidden] = useState(false);
+  const { status, sev, search, showHidden } = c.triageFilters;
+  const setFilters = c.updateTriageFilters;
   /** A persistence-only item has no ProcId, so the context cannot hold it: its queue key lives here. */
   const [persSel, setPersSel] = useState<string | null>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
@@ -98,7 +94,9 @@ export function TriageView() {
   if (!capture || !triage) return null;
 
   const toggleSev = (s: Severity) => {
-    setSev(cur => { const n = new Set(cur); if (n.has(s)) n.delete(s); else n.add(s); return n; });
+    const n = new Set(sev);
+    if (n.has(s)) n.delete(s); else n.add(s);
+    setFilters({ sev: n });
   };
   const total = triage.queue.length;
 
@@ -107,11 +105,11 @@ export function TriageView() {
       <section className="queue" aria-label="Queue">
         <div className="qtools">
           <input type="text" aria-label="Search flagged processes" placeholder="Search name, path, args, signing ID" value={search}
-            onChange={e => { setSearch(e.target.value); }} />
+            onChange={e => { setFilters({ search: e.target.value }); }} />
           <div className="row" role="radiogroup" aria-label="Status">
             {STATUS_FILTERS.map(f => (
               <label key={f} className="inline">
-                <input type="radio" name="status-filter" checked={status === f} onChange={() => { setStatus(f); }} />{f}
+                <input type="radio" name="status-filter" checked={status === f} onChange={() => { setFilters({ status: f }); }} />{f}
               </label>
             ))}
           </div>
@@ -131,7 +129,7 @@ export function TriageView() {
           <span>Showing {rows.length} of {showHidden ? capture.analysis.queue.length : total}</span>
           <span>
             {triage.hiddenCount} routine hidden
-            {triage.hiddenCount > 0 && <> · <button className="link" onClick={() => { setShowHidden(h => !h); }}>{showHidden ? 'hide' : 'show'}</button></>}
+            {triage.hiddenCount > 0 && <> · <button className="link" onClick={() => { setFilters({ showHidden: !showHidden }); }}>{showHidden ? 'hide' : 'show'}</button></>}
           </span>
         </div>
       </section>

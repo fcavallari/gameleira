@@ -1,5 +1,5 @@
-import { useLayoutEffect, useEffect, useRef, useState } from 'react';
-import { useVirtualizer } from '@tanstack/react-virtual';
+import { useEffect } from 'react';
+import { useVirtualRows } from './virtual';
 import type { QueueItem } from '../rules/engine';
 import type { Status } from '../session/store';
 
@@ -13,7 +13,7 @@ export interface QueueRow {
 }
 
 const ROW_H = 32;
-const STATUS_ICON: Record<Status, string> = { unreviewed: '○', confirmed: '✔', benign: '✕' };
+export const STATUS_ICON: Record<Status, string> = { unreviewed: '○', confirmed: '✔', benign: '✕' };
 
 function Row({ row, selected, onSelect, style }: {
   row: QueueRow; selected: boolean; onSelect(item: QueueItem): void; style?: React.CSSProperties;
@@ -41,11 +41,7 @@ function Row({ row, selected, onSelect, style }: {
 export function QueueList({ rows, selectedKey, onSelect }: {
   rows: QueueRow[]; selectedKey: string | null; onSelect(item: QueueItem): void;
 }) {
-  const scroller = useRef<HTMLDivElement>(null);
-  const [mode, setMode] = useState<'pending' | 'virtual' | 'plain'>('pending');
-  useLayoutEffect(() => { setMode((scroller.current?.clientHeight ?? 0) > 0 ? 'virtual' : 'plain'); }, [rows.length]);
-
-  const v = useVirtualizer({ count: rows.length, getScrollElement: () => scroller.current, estimateSize: () => ROW_H, overscan: 12 });
+  const { scroller, mode, v } = useVirtualRows(rows.length, ROW_H);
 
   // Keep the selected row visible when keys move it.
   useEffect(() => {
