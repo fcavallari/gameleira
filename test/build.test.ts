@@ -16,3 +16,21 @@ test('single self-contained file with CSP', () => {
   expect(html).not.toContain(path.resolve(__dirname, '..', '..'));
   expect(html).not.toContain('/@fs');
 });
+
+test('dev-only fixture autoload is stripped from the production build', () => {
+  const html = fs.readFileSync('dist/index.html', 'utf8');
+  // Unique strings from src/ui/dev.ts and the `?load=` effect in session-context.tsx. If
+  // import.meta.env.DEV stops being folded to false, these leak and this test fails.
+  for (const s of [
+    'dev fixtures are not available',
+    'bad fixture name',
+    'could not fetch fixture',
+    'SpriteTreeSamples',
+    'location.search',
+    '?load=',
+  ]) {
+    expect(html, s).not.toContain(s);
+  }
+  expect(html).not.toMatch(/URLSearchParams\([^)]*search/);
+  expect(html).not.toMatch(/\.get\(["']load["']\)/);
+});
