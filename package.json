@@ -1,0 +1,34 @@
+{
+  "name": "eslogger-viewer",
+  "version": "1.0.0",
+  "description": "Single-file viewer that triages Apple eslogger captures",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "serve": "vite preview",
+    "pretest": "vite build",
+    "test": "vitest run"
+  },
+  "license": "UNLICENSED",
+  "type": "module",
+  "dependencies": {
+    "@tanstack/react-virtual": "^3.14.26",
+    "idb": "^8.0.4",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "fake-indexeddb": "^6.2.8",
+    "jsdom": "^31.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vite-plugin-singlefile": "^2.3.4",
+    "vitest": "^5.1.0"
+  },
+  "private": true
+}
