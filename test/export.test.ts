@@ -57,5 +57,28 @@ test('import round-trips as a new session', async () => {
   expect((await store.listVerdicts(s.id)).every(v => v.sessionId === s.id)).toBe(true);
 });
 test('import rejects foreign data', async () => {
-  await expect(importSession(store, { format: 'nope' } as never)).rejects.toThrow();
+  await expect(importSession(store, { format: 'nope' } as never)).rejects.toThrow('not an eslogger-viewer session export');
+});
+test('import rejects an unsupported version with its own message', async () => {
+  const out = await exportSession(store, s.id, { includeEnv: false });
+  await expect(importSession(store, { ...out, version: 2 } as never))
+    .rejects.toThrow('unsupported session export version 2 (this build reads version 1)');
+  expect(await store.listSessions()).toHaveLength(1);
+});
+test('import of a malformed payload leaves no session behind', async () => {
+  const out = await exportSession(store, s.id, { includeEnv: false });
+  const before = await store.listSessions();
+  const badRow = { ...out, verdicts: [...out.verdicts, { ...out.verdicts[0]!, procKey: undefined }] };
+  await expect(importSession(store, badRow as never)).rejects.toThrow(/bad row 2 in "verdicts"/);
+  await expect(importSession(store, { ...out, routine: undefined } as never)).rejects.toThrow(/"routine" must be an array/);
+  await expect(importSession(store, { ...out, verdicts: [{ ...out.verdicts[0]!, snapshot: undefined }] } as never))
+    .rejects.toThrow(/bad row 0/);
+  expect(await store.listSessions()).toEqual(before);
+});
+test('store.importAll is atomic when a write fails mid-transaction', async () => {
+  const before = await store.listSessions();
+  const good = (await store.listCaptures(s.id))[0]!;
+  const bad = { ...good, fingerprint: { x: 1 } as never };   // invalid key: DataError after earlier puts were queued
+  await expect(store.importAll('x', [good, bad], [], [])).rejects.toThrow();
+  expect(await store.listSessions()).toEqual(before);
 });

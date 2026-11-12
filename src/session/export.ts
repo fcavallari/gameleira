@@ -42,14 +42,30 @@ export async function exportSession(
   return { format: 'eslogger-viewer-session', version: 1, session, captures, verdicts, routine, details };
 }
 
-/** Always creates a new session; the export's own id is never reused. Details are informational and not stored. */
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
+
+function rows(data: Record<string, unknown>, field: string, keys: string[], extra?: (r: Record<string, unknown>) => boolean): void {
+  const list = data[field];
+  if (!Array.isArray(list)) throw new Error(`invalid session export: "${field}" must be an array`);
+  list.forEach((r, i) => {
+    const ok = isObj(r) && keys.every(k => typeof r[k] === 'string') && (extra?.(r) ?? true);
+    if (!ok) throw new Error(`invalid session export: bad row ${i} in "${field}"`);
+  });
+}
+
+/** Throws a clear error unless `data` is a complete, readable session export. Writes nothing. */
+function validateExport(data: unknown): asserts data is SessionExport {
+  if (!isObj(data) || data.format !== 'eslogger-viewer-session') throw new Error('not an eslogger-viewer session export');
+  if (data.version !== 1) throw new Error(`unsupported session export version ${String(data.version)} (this build reads version 1)`);
+  if (!isObj(data.session) || typeof data.session.name !== 'string') throw new Error('invalid session export: "session" must have a name');
+  rows(data, 'captures', ['fingerprint']);
+  rows(data, 'verdicts', ['fingerprint', 'procKey', 'status'], r => isObj(r.snapshot));
+  rows(data, 'routine', ['programKey']);
+}
+
+/** Always creates a new session; the export's own id is never reused. Details are informational and not stored.
+ *  The whole payload is validated first and written in one transaction, so a bad file imports nothing. */
 export async function importSession(store: Store, data: SessionExport): Promise<Session> {
-  if (data?.format !== 'eslogger-viewer-session' || data.version !== 1) {
-    throw new Error('not an eslogger-viewer session export');
-  }
-  const s = await store.createSession(`${data.session.name} (imported)`);
-  for (const c of data.captures) await store.upsertCapture({ ...c, sessionId: s.id });
-  for (const v of data.verdicts) await store.setVerdict({ ...v, sessionId: s.id });
-  for (const r of data.routine) await store.addRoutine({ ...r, sessionId: s.id });
-  return s;
+  validateExport(data);
+  return store.importAll(`${data.session.name} (imported)`, data.captures, data.verdicts, data.routine);
 }

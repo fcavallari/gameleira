@@ -25,6 +25,8 @@ export interface Store {
   addRoutine(r: RoutineRec): Promise<void>;
   removeRoutine(sessionId: string, programKey: string): Promise<void>;
   listRoutine(sessionId: string): Promise<RoutineRec[]>;
+  /** Creates a session named `name` and stores all rows under it in ONE transaction: all or nothing. */
+  importAll(name: string, captures: CaptureRec[], verdicts: Verdict[], routine: RoutineRec[]): Promise<Session>;
 }
 
 interface Schema extends DBSchema {
@@ -106,5 +108,25 @@ export async function openStore(name: string = DB_NAME): Promise<Store> {
       await db.delete('routine', [sessionId, programKey]);
     },
     listRoutine: sessionId => db.getAll('routine', prefixRange(sessionId)),
+    async importAll(sessionName, captures, verdicts, routine) {
+      const t = now();
+      const s: Session = { id: newId(), name: sessionName, created: t, updated: t };
+      const tx = db.transaction(['sessions', 'captures', 'verdicts', 'routine'], 'readwrite');
+      const pending: Promise<unknown>[] = [tx.done];
+      try {
+        // put() can throw synchronously (invalid key) after earlier puts were queued: collect every promise
+        // as we go so all of them can be settled once the transaction is aborted.
+        pending.push(tx.objectStore('sessions').put(s));
+        for (const c of captures) pending.push(tx.objectStore('captures').put({ ...c, sessionId: s.id }));
+        for (const v of verdicts) pending.push(tx.objectStore('verdicts').put({ ...v, sessionId: s.id }));
+        for (const r of routine) pending.push(tx.objectStore('routine').put({ ...r, sessionId: s.id }));
+        await Promise.all(pending);
+      } catch (e) {
+        try { tx.abort(); } catch { /* already finished or aborted */ }
+        await Promise.allSettled(pending);
+        throw e;
+      }
+      return s;
+    },
   };
 }
