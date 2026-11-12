@@ -30,6 +30,7 @@ export class ModelBuilder {
   private badLines = 0;
   private processes = new Map<ProcId, Process>();
   private tokenIndex = new Map<string, ProcId>();
+  private latestByPid = new Map<number, Process>();
   private persistence: CaptureModel['persistence'] = [];
   private otherEvents: Record<string, number> = {};
 
@@ -60,16 +61,35 @@ export class ModelBuilder {
     return m;
   }
 
+  private add(p: Process, token: string): void {
+    this.processes.set(p.id, p);
+    this.tokenIndex.set(token, p.id);
+    this.latestByPid.set(p.pid, p);
+  }
+
   /** The process owning info.token, created on first sight; refreshes raw parent fields. */
-  private ensure(info: ProcInfo, seq: number): Process {
+  private ensure(info: ProcInfo, seq: number, time: string): Process {
     const id = this.tokenIndex.get(info.token);
     const known = id !== undefined ? this.processes.get(id) : undefined;
-    if (!known) {
-      const p = newProcess(info, imageFrom(info, seq), seq);
-      this.processes.set(p.id, p);
-      this.tokenIndex.set(info.token, p.id);
-      return p;
+    if (known) {
+      this.refresh(known, info, seq);
+      return known;
     }
+    // Missed exec: an unseen token of a live process with the same start_time
+    // (start_time survives exec and changes on PID reuse).
+    const live = this.latestByPid.get(info.pid);
+    if (live && live.exitTime === null && live.startTime !== null && live.startTime === info.startTime) {
+      live.images.push({ ...imageFrom(info, seq), time });
+      this.tokenIndex.set(info.token, live.id);
+      this.refresh(live, info, seq);
+      return live;
+    }
+    const p = newProcess(info, imageFrom(info, seq), seq);
+    this.add(p, info.token);
+    return p;
+  }
+
+  private refresh(known: Process, info: ProcInfo, seq: number): void {
     // Latest seen, but a later event without the field doesn't erase it.
     if (info.ppid !== null) known.ppid = info.ppid;
     if (info.originalPpid !== null) known.originalPpid = info.originalPpid;
@@ -79,11 +99,10 @@ export class ModelBuilder {
     // Missing exec: same token, different executable.
     const cur = latestImage(known)?.path ?? null;
     if (info.path !== null && cur !== null && info.path !== cur) known.images.push(imageFrom(info, seq));
-    return known;
   }
 
   private apply(ev: NormEvent): void {
-    const p = this.ensure(ev.proc, ev.seq);
+    const p = this.ensure(ev.proc, ev.seq, ev.time);
     switch (ev.kind) {
       case 'fork': {
         const child = ev.child!;
@@ -94,8 +113,7 @@ export class ModelBuilder {
         }
         const c = newProcess(child, { ...imageFrom(child, ev.seq), inherited: true }, ev.seq);
         c.forkParent = p.id;
-        this.processes.set(c.id, c);
-        this.tokenIndex.set(child.token, c.id);
+        this.add(c, child.token);
         break;
       }
       case 'exec': {

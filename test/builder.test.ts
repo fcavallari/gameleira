@@ -34,9 +34,14 @@ test('exit sets exitTime', () => {
 });
 test('process seen only in its own events keeps its path', () => {
   const sh = model('shlayer.json');
-  const payload = [...sh.processes.values()].find(p => imagePaths(p).includes('/private/tmp/FaF74ncqmHBe/8CMt7kQ2jM3'));
-  expect(payload).toBeDefined();
-  expect(payload!.images[0]!.signingId).toBeNull();
+  const ps = [...sh.processes.values()].filter(p => p.pid === 35970);
+  expect(ps).toHaveLength(1);
+  const payload = ps[0]!;
+  expect(imagePaths(payload)).toEqual(['/bin/bash', '/private/tmp/FaF74ncqmHBe/8CMt7kQ2jM3']);
+  expect(payload.forkParent).toBe(sh.tokenIndex.get('35917:103436'));
+  const img = payload.images.find(i => i.path === '/private/tmp/FaF74ncqmHBe/8CMt7kQ2jM3')!;
+  expect(img.signingId).toBeNull();
+  expect(img.inherited).toBe(false);
 });
 test('stats', () => {
   expect(m.stats.events).toBe(11610);
@@ -52,7 +57,7 @@ test('es-lab builds in under 5s', () => {
 
 // ---- synthetic events ----
 
-interface ProcOpts { path?: string; ppid?: number; parent?: string; responsible?: string }
+interface ProcOpts { path?: string; ppid?: number; parent?: string; responsible?: string; start?: string }
 function tok(t: string) {
   const [pid, pidversion] = t.split(':').map(Number);
   return { pid, pidversion };
@@ -64,6 +69,7 @@ function proc(t: string, o: ProcOpts = {}) {
     ...(o.ppid !== undefined ? { ppid: o.ppid } : {}),
     ...(o.parent ? { parent_audit_token: tok(o.parent) } : {}),
     ...(o.responsible ? { responsible_audit_token: tok(o.responsible) } : {}),
+    ...(o.start ? { start_time: o.start } : {}),
   };
 }
 function ev(seq: number, p: ReturnType<typeof proc>, event: Record<string, unknown>): string {
@@ -121,4 +127,26 @@ test('btm, other events and line stats', () => {
   expect(m6.stats).toMatchObject({
     lines: 4, events: 2, badLines: 1, otherEvents: { mmap: 1 }, versions: [11], firstSeq: 1,
   });
+});
+test('new token with same pid and start_time as a live process is a missed exec', () => {
+  const T = '2026-01-01T00:00:00.5Z';
+  const m7 = buildModel([
+    ev(1, proc('100:1'), { fork: { child: proc('500:1', { path: '/bin/bash', start: T }) } }),
+    ev(2, proc('500:2', { path: '/tmp/payload', start: T }), { write: { target: { path: '/tmp/x' } } }),
+  ]);
+  const ps = [...m7.processes.values()].filter(p => p.pid === 500);
+  expect(ps).toHaveLength(1);
+  const p = ps[0]!;
+  expect(imagePaths(p)).toEqual(['/bin/bash', '/tmp/payload']);
+  expect(p.images[1]).toMatchObject({ inherited: false, args: null, env: null, seq: 2, time: '2026-01-01T00:00:02Z' });
+  expect(m7.tokenIndex.get('500:2')).toBe(p.id);
+  expect(p.forkParent).toBe('100:1');
+  expect(p.fileOps.map(f => f.path)).toEqual(['/tmp/x']);
+});
+test('new token with same pid but different start_time is a new process', () => {
+  const m8 = buildModel([
+    ev(1, proc('100:1'), { fork: { child: proc('500:1', { path: '/bin/bash', start: '2026-01-01T00:00:00.5Z' }) } }),
+    ev(2, proc('500:2', { path: '/tmp/payload', start: '2026-01-01T00:00:01.5Z' }), { write: { target: { path: '/tmp/x' } } }),
+  ]);
+  expect([...m8.processes.values()].filter(p => p.pid === 500)).toHaveLength(2);
 });
