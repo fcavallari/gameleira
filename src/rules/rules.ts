@@ -2,6 +2,7 @@ import type { CaptureModel, Image, PersistenceItem, Process } from '../model/typ
 import { basename, latestImage, normPath } from '../model/util';
 
 export type Severity = 'high' | 'med' | 'low';
+export const SEVERITY_RANK: Record<Severity, number> = { high: 3, med: 2, low: 1 };
 export interface RuleCtx { m: CaptureModel; p: Process; img: Image; imgIndex: number }
 export interface Rule {
   id: string; title: string; severity: Severity; explanation: string; mitre: string[];
@@ -21,14 +22,29 @@ export const RECON_TOOLS: Set<string> = new Set([
   'airport', 'scutil', 'networksetup', 'security', 'csrutil', 'spctl',
 ]);
 
-/** Temporary, download, removable-media and hidden locations a normal install never runs from. */
-const USER_WRITABLE: RegExp[] = [
+/** Temporary, download, removable-media and buried hidden locations a normal install never runs from. */
+const STRONG_LOCATIONS: RegExp[] = [
   /^\/tmp\//, /^\/var\/folders\//, /^\/Users\/Shared\//, /^\/Users\/[^/]+\/Downloads\//,
-  /^\/Volumes\//, /\/AppTranslocation\//, /^\/Users\/(?:[^/]+\/)*\.[^/]+\//,
+  /^\/Volumes\//, /\/AppTranslocation\//,
+  // A hidden directory below a visible one, e.g. ~/Desktop/.hidden/.
+  /^\/Users\/[^/]+\/[^/.][^/]*\/(?:[^/]+\/)*\.[^/]+\//,
 ];
-export function isUserWritable(path: string): boolean {
+/** A dot-directory directly under home (~/.cargo, ~/.nvm, ~/.local): where developer tooling lives. */
+const WEAK_LOCATION = /^\/Users\/[^/]+\/\.[^/]+\//;
+
+export type Location = 'strong' | 'weak' | null;
+export function oddLocation(path: string): Location {
   const p = normPath(path);
-  return USER_WRITABLE.some(re => re.test(p));
+  if (STRONG_LOCATIONS.some(re => re.test(p))) return 'strong';
+  return WEAK_LOCATION.test(p) ? 'weak' : null;
+}
+export function isUserWritable(path: string): boolean {
+  return oddLocation(path) !== null;
+}
+
+/** `-x`, or a short-option cluster such as `-cr` containing x; `--long` options never match. */
+export function hasShortFlag(args: string[], letter: string): boolean {
+  return args.some(a => a === `-${letter}` || (/^-[A-Za-z]+$/.test(a) && a.includes(letter)));
 }
 
 const LAUNCH_DIR = /^(?:\/Users\/[^/]+\/Library\/LaunchAgents|\/Library\/Launch(?:Agents|Daemons))\//;
@@ -152,7 +168,7 @@ export const RULES: Rule[] = [
     match: ({ img }) => {
       if (basename(img.path) !== 'xattr') return null;
       const a = rest(img);
-      return a.includes('-c') || (a.includes('-d') && a.includes('com.apple.quarantine'))
+      return hasShortFlag(a, 'c') || (hasShortFlag(a, 'd') && a.includes('com.apple.quarantine'))
         ? { evidence: cmdline(img) } : null;
     },
   },
@@ -164,7 +180,7 @@ export const RULES: Rule[] = [
       const n = basename(img.path);
       const a = rest(img);
       if (n === 'openssl' && a.includes('enc') && a.includes('-d')) return { evidence: cmdline(img) };
-      if (n === 'base64' && a.some(x => x === '-d' || x === '-D' || x === '--decode')) return { evidence: cmdline(img) };
+      if (n === 'base64' && (hasShortFlag(a, 'd') || hasShortFlag(a, 'D') || a.includes('--decode'))) return { evidence: cmdline(img) };
       return null;
     },
   },
@@ -197,7 +213,8 @@ export const RULES: Rule[] = [
     match: ({ p, img }) => {
       const n = basename(img.path);
       if (n !== 'curl' && n !== 'wget') return null;
-      const toFile = rest(img).some(x => x === '-o' || x === '-O' || x === '--output' || x.startsWith('--output='));
+      const a = rest(img);
+      const toFile = hasShortFlag(a, 'o') || hasShortFlag(a, 'O') || a.some(x => x === '--output' || x.startsWith('--output='));
       if (toFile) return { evidence: cmdline(img) };
       const created = p.fileOps.find(op => op.kind === 'create');
       return created ? { evidence: `${cmdline(img)}; created ${created.path}` } : null;
@@ -211,7 +228,7 @@ export const RULES: Rule[] = [
       const n = basename(img.path);
       const a = rest(img);
       const first = a[0] ?? '';
-      const hit = (n === 'ditto' && a.includes('-c')) || n === 'zip'
+      const hit = (n === 'ditto' && hasShortFlag(a, 'c')) || n === 'zip'
         // tar's first arg: `--create`, or a mode cluster such as `czf` / `-czf` (not long options like --exclude).
         || (n === 'tar' && (first === '--create' || /^-?[A-Za-z]*c[A-Za-z]*$/.test(first)));
       if (!hit) return null;
@@ -223,14 +240,27 @@ export const RULES: Rule[] = [
     id: 'odd-location-exec', title: 'Ran from an unusual location', severity: 'med',
     explanation: 'A program ran from a temporary or downloads location rather than `/Applications` or system paths.',
     mitre: ['T1204.002'], scope: 'image',
+    // Low results (team-signed, or tooling dot-dirs under home) are gated chain-only by the engine.
     match: ({ img }) => {
-      if (img.path === null || !isUserWritable(img.path)) return null;
-      const severity: Severity = isUnsigned(img) || isAdhoc(img) ? 'high'
-        : img.teamId !== null ? 'low' : 'med';
-      const signing = img.signingId === null ? 'unsigned'
-        : isAdhoc(img) ? `ad-hoc signed (${img.signingId})`
-        : img.teamId !== null ? `signed by team ${img.teamId}` : `signed (${img.signingId})`;
-      return { evidence: `${img.path}, ${signing}`, severity };
+      const hits: { severity: Severity; evidence: string }[] = [];
+      const where = img.path !== null ? oddLocation(img.path) : null;
+      if (where !== null) {
+        const adhoc = isAdhoc(img);
+        const weak: Severity = isUnsigned(img) ? 'med' : 'low';
+        const strong: Severity = isUnsigned(img) || adhoc ? 'high' : img.teamId !== null ? 'low' : 'med';
+        const signing = img.signingId === null ? 'unsigned'
+          : adhoc ? `ad-hoc signed (${img.signingId})`
+          : img.teamId !== null ? `signed by team ${img.teamId}` : `signed (${img.signingId})`;
+        hits.push({ severity: where === 'strong' ? strong : weak, evidence: `${img.path}, ${signing}` });
+      }
+      // A script has no signature of its own, so its location alone never makes it high.
+      const scriptWhere = img.script !== null ? oddLocation(img.script) : null;
+      if (scriptWhere !== null) {
+        hits.push({ severity: scriptWhere === 'strong' ? 'med' : 'low', evidence: `script ${img.script}` });
+      }
+      if (hits.length === 0) return null;
+      const severity = hits.reduce<Severity>((s, h) => (SEVERITY_RANK[h.severity] > SEVERITY_RANK[s] ? h.severity : s), 'low');
+      return { evidence: hits.map(h => h.evidence).join('; '), severity };
     },
   },
   {

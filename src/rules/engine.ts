@@ -1,7 +1,7 @@
 import { ancestry } from '../model/relations';
 import type { CaptureModel, ProcId } from '../model/types';
 import { basename } from '../model/util';
-import { RULES, type Rule, type Severity } from './rules';
+import { RULES, SEVERITY_RANK as RANK, type Rule, type Severity } from './rules';
 
 export interface Finding { ruleId: string; severity: Severity; title: string; explanation: string;
   mitre: string[]; evidence: string; imgIndex: number | null; persistenceId: string | null }
@@ -13,10 +13,11 @@ export interface Analysis { queue: QueueItem[]; findings: Map<ProcId, Finding[]>
 
 /** Low-signal rules that queue a process only in context (spec §6.3). */
 const GATED = new Set(['recon', 'adhoc']);
+/** Gated findings; a low `odd-location-exec` (team-signed, or a tooling dot-dir) is gated like `adhoc`. */
+const isGated = (f: Finding): boolean =>
+  GATED.has(f.ruleId) || (f.ruleId === 'odd-location-exec' && f.severity === 'low');
 const CLUSTER_TOOLS = 3;
 const CLUSTER_WINDOW_MS = 60_000;
-
-const RANK: Record<Severity, number> = { high: 3, med: 2, low: 1 };
 
 interface Hit { f: Finding; seq: number; time: string | null }
 
@@ -88,7 +89,7 @@ export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
   const chainSources = new Set<ProcId>();
   for (const [id, list] of hits) {
     for (const h of list) {
-      if (GATED.has(h.f.ruleId)) continue;
+      if (isGated(h.f)) continue;
       flagged.add(id);
       if (h.f.severity !== 'low') chainSources.add(id);
     }

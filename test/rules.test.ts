@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { basename } from '../src/model/util';
 import { analyze } from '../src/rules/engine';
 import { RULES } from '../src/rules/rules';
+import type { CaptureModel, Image, Process } from '../src/model/types';
 import type { FixtureName } from './fixtures';
 import { count, item, model, queued, rules, sev } from './helpers';
 
@@ -29,7 +30,14 @@ test('es-lab must not queue routine noise', () => {
   for (const n of ['ps', 'git', 'docker-tools', 'mdworker_shared']) expect(names).not.toContain(n);
 });
 
-test('es-lab queue stays small', () => expect(queued('es-lab.jsonl').items.length).toBeLessThanOrEqual(15));
+test('es-lab queue stays small', () => expect(queued('es-lab.jsonl').items.length).toBeLessThanOrEqual(14));
+
+test('es-lab team-signed Chrome clone under /var/folders is context-only', () => {
+  const q = queued('es-lab.jsonl');
+  expect(q.items.some(x => x.p?.pid === 8573)).toBe(false);
+  const chrome = [...q.m.processes.values()].find(p => p.pid === 8573)!;
+  expect(q.a.contextOnly.get(chrome.id)?.map(f => f.ruleId)).toContain('odd-location-exec');
+});
 
 describe('atomic stealer', () => {
   test('two fake prompts', () => expect(count('atomic_stealer.json', x => basename(x.paths.at(-1) ?? null) === 'osascript' && x.item.findings.some(f => f.ruleId === 'fake-prompt'))).toBe(2));
@@ -61,6 +69,72 @@ describe('shlayer', () => {
   test('payload in /tmp high', () => expect(sev('shlayer.json', x => x.paths.includes('/private/tmp/FaF74ncqmHBe/8CMt7kQ2jM3'))).toBe('high'));
   test('quarantine strip', () => expect(count('shlayer.json', x => x.item.findings.some(f => f.ruleId === 'quarantine-strip'))).toBeGreaterThanOrEqual(1));
   test('curl downloads', () => expect(count('shlayer.json', x => x.item.findings.some(f => f.ruleId === 'download'))).toBeGreaterThanOrEqual(1));
+  test('hidden Install.command entry script flagged', () => expect(rules('shlayer.json', x => x.p?.pid === 35901)).toContain('odd-location-exec'));
+  test('xattr, openssl and payload sit in the flagged chain', () => {
+    for (const pid of [35967, 35968, 35970]) expect(item('shlayer.json', x => x.p?.pid === pid)!.inFlaggedChain).toBe(true);
+  });
+});
+
+function img(o: Partial<Image>): Image {
+  return {
+    token: '100:1', path: '/bin/x', signingId: 'com.example.x', teamId: null, isPlatform: false, csFlags: 0,
+    args: null, cwd: null, env: null, stdinIsPipe: null, script: null,
+    time: '2026-11-12T00:00:00.000Z', seq: 1, inherited: false, ...o,
+  };
+}
+const apple = (path: string, args: string[]): Image =>
+  img({ path, args, signingId: `com.apple.${path.split('/').pop()}`, isPlatform: true });
+
+/** A one-process capture holding the given images. */
+function synth(images: Image[]): CaptureModel {
+  const p: Process = {
+    id: '100:1', pid: 100, ghost: false, images, forkParent: null,
+    originalPpid: null, ppid: null, parentToken: null, responsibleToken: null,
+    originalParent: null, currentParent: null, responsible: null,
+    startTime: null, exitTime: null, firstSeq: 1, fileOps: [],
+  };
+  return {
+    processes: new Map([[p.id, p]]), tokenIndex: new Map([[p.id, p.id]]), persistence: [],
+    stats: { lines: 0, events: 0, badLines: 0, otherEvents: {}, versions: [], firstSeq: null, firstTime: null, lastTime: null },
+  };
+}
+const analyzed = (i: Image) => analyze(synth([i]));
+const queuedRules = (i: Image) => analyzed(i).queue[0]?.findings.map(f => f.ruleId) ?? [];
+
+describe('odd-location strong/weak split', () => {
+  test('ad-hoc tool under ~/.cargo is context-only outside a chain', () => {
+    const a = analyzed(img({ path: '/Users/u/.cargo/bin/yr', signingId: 'yr', csFlags: 0x2 }));
+    expect(a.queue).toHaveLength(0);
+    expect(a.contextOnly.get('100:1')?.map(f => f.ruleId)).toContain('odd-location-exec');
+  });
+  test('team-signed binary under ~/.local is not queued', () =>
+    expect(analyzed(img({ path: '/Users/u/.local/share/x', teamId: 'ABCDE12345' })).queue).toHaveLength(0));
+  test('unsigned binary in a nested hidden dir is high', () => {
+    const a = analyzed(img({ path: '/Users/u/Desktop/.hidden/x', signingId: null }));
+    expect(a.queue[0]?.severity).toBe('high');
+    expect(a.queue[0]?.findings.find(f => f.ruleId === 'odd-location-exec')?.severity).toBe('high');
+  });
+  test('unsigned binary under a home dot-dir is med', () => {
+    const a = analyzed(img({ path: '/Users/u/.foo/bin/x', signingId: null }));
+    expect(a.queue[0]?.severity).toBe('med');
+    expect(a.queue[0]?.findings.find(f => f.ruleId === 'odd-location-exec')?.severity).toBe('med');
+  });
+  test('script in a strong location is med and names the script', () => {
+    const bash = apple('/bin/bash', ['/bin/bash', '/Users/u/Desktop/.hidden/run.command']);
+    const f = analyzed({ ...bash, script: '/Users/u/Desktop/.hidden/run.command' }).queue[0]?.findings[0];
+    expect(f?.ruleId).toBe('odd-location-exec');
+    expect(f?.severity).toBe('med');
+    expect(f?.evidence).toContain('/Users/u/Desktop/.hidden/run.command');
+  });
+});
+
+describe('short-flag clusters', () => {
+  test('xattr -cr strips quarantine', () => expect(queuedRules(apple('/usr/bin/xattr', ['xattr', '-cr', 'X.app']))).toContain('quarantine-strip'));
+  test('xattr -rd com.apple.quarantine strips quarantine', () =>
+    expect(queuedRules(apple('/usr/bin/xattr', ['xattr', '-rd', 'com.apple.quarantine', 'X']))).toContain('quarantine-strip'));
+  test('xattr -l does not', () => expect(queuedRules(apple('/usr/bin/xattr', ['xattr', '-l', 'f']))).not.toContain('quarantine-strip'));
+  test('ditto -ck archives', () => expect(queuedRules(apple('/usr/bin/ditto', ['ditto', '-ck', 'a', 'b']))).toContain('archive-staging'));
+  test('curl -sLo downloads', () => expect(queuedRules(apple('/usr/bin/curl', ['curl', '-sLo', 'f', 'https://example.com']))).toContain('download'));
 });
 
 test('every finding explains itself', () => {
@@ -75,5 +149,5 @@ test('queue size per fixture is recorded', () => {
   for (const f of ['es-lab.jsonl', 'atomic_stealer.json', 'rustbucket.json', 'shlayer.json'] as const)
     sizes[f] = queued(f).items.length;
   console.log('queue sizes', sizes);
-  expect(sizes['es-lab.jsonl']).toBeLessThanOrEqual(15);
+  expect(sizes['es-lab.jsonl']).toBeLessThanOrEqual(14);
 });
