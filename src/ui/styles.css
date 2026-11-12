@@ -38,6 +38,7 @@ label.inline { display: inline-flex; align-items: center; gap: 6px; }
 .list { list-style: none; margin: 8px 0; padding: 0; }
 .list > li { padding: 8px 0; border-bottom: 1px solid var(--line); }
 .bar { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 8px; }
+.capture-info { margin: 0; }
 .counts { display: flex; gap: 16px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
 .tabs { display: flex; gap: 4px; }
 .tabs button { border-radius: 6px 6px 0 0; }

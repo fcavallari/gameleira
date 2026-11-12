@@ -72,6 +72,33 @@ test('create session and see empty drop zone with capture command', async () => 
   expect(screen.getByRole('heading', { name: 'lab MacBook' })).toBeInTheDocument();
 });
 
+test('the header shows what was skipped: unreadable lines, other event types, schema version, older-format note', async () => {
+  const withStats = (stats: Partial<CaptureModel['stats']>) => async (file: File, onProgress?: Parameters<typeof loadCapture>[1]) => {
+    const cap = await loadCapture(nodeFile(file.name as FixtureName), onProgress);
+    return { ...cap, model: { ...cap.model, stats: { ...cap.model.stats, ...stats } } };
+  };
+  runLoadMock.mockImplementation(withStats({ badLines: 2, otherEvents: { xyz: 3 } }));   // spritetree_demo is schema v6
+  render(<App />);
+  await newSession('lab');
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('spritetree_demo.json'));
+  const info = await screen.findByLabelText('Capture details');
+  expect(info).toHaveTextContent('2 unreadable lines · other events: xyz ×3 · schema v6');
+  expect(info).toHaveTextContent('older eslogger format: some checks (e.g. piped shells) may not apply');
+});
+
+test('a schema 11 capture with nothing skipped shows its version and no older-format note', async () => {
+  runLoadMock.mockImplementation(async file => {
+    const cap = await loadCapture(nodeFile(file.name as FixtureName));
+    return { ...cap, model: { ...cap.model, stats: { ...cap.model.stats, versions: [11] } } };
+  });
+  render(<App />);
+  await newSession('lab');
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('spritetree_demo.json'));
+  const info = await screen.findByLabelText('Capture details');
+  expect(info).toHaveTextContent('schema v11');
+  expect(info).not.toHaveTextContent(/older eslogger format/);
+});
+
 test('shows load error in the drop zone', async () => {
   runLoadMock.mockRejectedValue(new Error('No eslogger events found in this file'));
   render(<App />);

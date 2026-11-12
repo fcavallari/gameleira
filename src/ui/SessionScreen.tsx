@@ -4,6 +4,7 @@ import { StoreErrorBanner } from './StoreErrorBanner';
 import { TreeView } from './TreeView';
 import { TriageView } from './TriageView';
 import { useSession, type View } from './session-context';
+import { captureInfo } from './triage-model';
 
 // Spec §4.2, verbatim.
 const CAPTURE_CMD =
@@ -95,6 +96,20 @@ function Counts() {
   );
 }
 
+/** Lines that could not be read, event types that are not modelled and the schema version: counted, never hidden. */
+function CaptureInfo() {
+  const c = useSession();
+  if (!c.capture) return null;
+  const { line, older } = captureInfo(c.capture.model.stats);
+  if (line === null) return null;
+  return (
+    <p className="capture-info muted small" aria-label="Capture details">
+      {line}
+      {older && <> · <span className="warn">older eslogger format: some checks (e.g. piped shells) may not apply</span></>}
+    </p>
+  );
+}
+
 export function SessionScreen() {
   const c = useSession();
   const session = c.session!;
@@ -121,6 +136,7 @@ export function SessionScreen() {
           )}
         </div>
         <Counts />
+        <CaptureInfo />
         <div role="tablist" className="tabs">
           {TABS.map(t => (
             <button key={t.id} role="tab" aria-selected={c.view === t.id} className={c.view === t.id ? 'on' : ''}

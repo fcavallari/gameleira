@@ -1,6 +1,6 @@
 import type { LoadedCapture } from '../ingest/load';
 import { displayName } from '../model/relations';
-import type { Process } from '../model/types';
+import type { CaptureStats, Process } from '../model/types';
 import { basename } from '../model/util';
 import type { QueueItem } from '../rules/engine';
 import type { Severity } from '../rules/rules';
@@ -96,3 +96,25 @@ export const fmtArgs = (args: string[]): string =>
 
 /** True when programKey() would be the identity-less `-|-|-`: marking it routine would hide everything. */
 export const NO_IDENTITY = '-|-|-';
+
+/** The first schema version with the exec stdin data the `shell-from-pipe` rule needs (spec §4). */
+export const MODERN_SCHEMA = 11;
+const MAX_OTHER_SHOWN = 5;
+
+/**
+ * What the loader skipped or could not use, so nothing is dropped silently: unreadable lines, event types the viewer
+ * does not model, and the eslogger schema version(s). `line` is null when there is nothing to say.
+ */
+export function captureInfo(stats: CaptureStats): { line: string | null; older: boolean } {
+  const parts: string[] = [];
+  if (stats.badLines > 0) parts.push(`${stats.badLines.toLocaleString('en-US')} unreadable ${stats.badLines === 1 ? 'line' : 'lines'}`);
+  const other = Object.entries(stats.otherEvents).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  if (other.length > 0) {
+    const shown = other.slice(0, MAX_OTHER_SHOWN).map(([t, n]) => `${t} ×${n.toLocaleString('en-US')}`);
+    if (other.length > MAX_OTHER_SHOWN) shown.push(`${other.length - MAX_OTHER_SHOWN} more`);
+    parts.push(`other events: ${shown.join(', ')}`);
+  }
+  const versions = stats.versions.filter(v => v > 0);
+  if (versions.length > 0) parts.push(`schema ${versions.map(v => `v${v}`).join(', ')}`);
+  return { line: parts.length > 0 ? parts.join(' · ') : null, older: versions.length > 0 && versions.every(v => v < MODERN_SCHEMA) };
+}

@@ -1,7 +1,8 @@
 import { expect, test } from 'vitest';
 import type { LoadedCapture } from '../src/ingest/load';
 import type { Image, Process } from '../src/model/types';
-import { itemArgs, rowArgs } from '../src/ui/triage-model';
+import type { CaptureStats } from '../src/model/types';
+import { captureInfo, itemArgs, rowArgs } from '../src/ui/triage-model';
 import { procByPid, queued } from './helpers';
 
 const img = (o: Partial<Image>): Image => ({
@@ -35,4 +36,21 @@ test('a process that never exec\'d with args shows none; a single image shows it
   expect(rowArgs(proc([img({ path: '/bin/x', args: null, inherited: true })]))).toBe('');
   expect(rowArgs(proc([img({ path: '/bin/ls', args: ['ls', '-l', '/tmp'] })]))).toBe('-l /tmp');
   expect(rowArgs(procByPid(queued('es-lab.jsonl').m, 40753))).toContain('display dialog');
+});
+
+const stats = (o: Partial<CaptureStats>): CaptureStats =>
+  ({ lines: 0, events: 1, badLines: 0, otherEvents: {}, versions: [11], firstSeq: 1, firstTime: null, lastTime: null, ...o });
+
+test('captureInfo lists unreadable lines, other event types and the schema version', () => {
+  expect(captureInfo(stats({ badLines: 2, otherEvents: { xyz: 3 }, versions: [11] })))
+    .toEqual({ line: '2 unreadable lines · other events: xyz ×3 · schema v11', older: false });
+  expect(captureInfo(stats({ badLines: 1 })).line).toBe('1 unreadable line · schema v11');
+  expect(captureInfo(stats({ otherEvents: { a: 1, b: 9, c: 1, d: 1, e: 1, f: 1, g: 1 } })).line)
+    .toBe('other events: b ×9, a ×1, c ×1, d ×1, e ×1, 2 more · schema v11');
+});
+
+test('captureInfo flags captures older than schema 11, and says nothing when there is nothing to say', () => {
+  expect(captureInfo(stats({ versions: [6] }))).toEqual({ line: 'schema v6', older: true });
+  expect(captureInfo(stats({ versions: [6, 11] })).older).toBe(false);
+  expect(captureInfo(stats({ versions: [] }))).toEqual({ line: null, older: false });
 });
