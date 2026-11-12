@@ -75,6 +75,23 @@ test('import of a malformed payload leaves no session behind', async () => {
     .rejects.toThrow(/bad row 0/);
   expect(await store.listSessions()).toEqual(before);
 });
+test('import rejects verdicts the screens could not render (bad status, snapshot name or ruleIds)', async () => {
+  const out = await exportSession(store, s.id, { includeEnv: false });
+  const before = await store.listSessions();
+  const v = out.verdicts[0]!;
+  const bad = [
+    { ...v, status: 'maybe' },
+    { ...v, snapshot: { ...v.snapshot, name: 42 } },
+    { ...v, snapshot: { ...v.snapshot, ruleIds: undefined } },
+    { ...v, snapshot: { ...v.snapshot, ruleIds: [1, 2] } },
+    { ...v, snapshot: { ...v.snapshot, args: 'ls -l' } },
+  ];
+  for (const row of bad) {
+    await expect(importSession(store, { ...out, verdicts: [row] } as never)).rejects.toThrow(/bad row 0 in "verdicts"/);
+  }
+  expect(await store.listSessions()).toEqual(before);
+  await importSession(store, out);   // the untouched export still imports
+});
 test('store.importAll is atomic when a write fails mid-transaction', async () => {
   const before = await store.listSessions();
   const good = (await store.listCaptures(s.id))[0]!;

@@ -44,6 +44,16 @@ export async function exportSession(
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 
+const STATUSES: readonly string[] = ['unreviewed', 'confirmed', 'benign'];
+const isStrings = (x: unknown): x is string[] => Array.isArray(x) && x.every(e => typeof e === 'string');
+
+/** The screens read these fields without checking: a hand-edited file must not get past here with them wrong. */
+const validVerdict = (r: Record<string, unknown>): boolean => {
+  const sn = r.snapshot;
+  return STATUSES.includes(r.status as string) && isObj(sn) && typeof sn.name === 'string' && isStrings(sn.ruleIds) &&
+    (sn.path === null || typeof sn.path === 'string') && (sn.args === null || isStrings(sn.args));
+};
+
 function rows(data: Record<string, unknown>, field: string, keys: string[], extra?: (r: Record<string, unknown>) => boolean): void {
   const list = data[field];
   if (!Array.isArray(list)) throw new Error(`invalid session export: "${field}" must be an array`);
@@ -59,7 +69,7 @@ function validateExport(data: unknown): asserts data is SessionExport {
   if (data.version !== 1) throw new Error(`unsupported session export version ${String(data.version)} (this build reads version 1)`);
   if (!isObj(data.session) || typeof data.session.name !== 'string') throw new Error('invalid session export: "session" must have a name');
   rows(data, 'captures', ['fingerprint']);
-  rows(data, 'verdicts', ['fingerprint', 'procKey', 'status'], r => isObj(r.snapshot));
+  rows(data, 'verdicts', ['fingerprint', 'procKey', 'status', 'note'], validVerdict);
   rows(data, 'routine', ['programKey']);
 }
 
