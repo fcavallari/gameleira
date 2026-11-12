@@ -61,7 +61,7 @@ export interface SessionCtx {
   loadFiles(files: File[]): Promise<void>;
   setActive(fingerprint: string): void;
   setView(v: View): void;
-  /** `note` omitted keeps the existing note. */
+  /** `note` omitted keeps the existing note. A persistence-only queue item has no process: pass its queue key (`i:<persistenceId>`). */
   setVerdict(procId: ProcId, status: Status, note?: string): Promise<void>;
   /** Resolves false when refused (no program identity) or declined at the risky-program prompt. */
   addRoutine(img: Image): Promise<boolean>;
@@ -267,9 +267,11 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     const { session: s, active: fp, captures: caps } = latest.current;
     const cap = fp ? caps.get(fp) : undefined;
     const p = cap?.model.processes.get(procId);
-    if (!s || !fp || !cap || !p) return;
-    const img = latestImage(p);
-    const findings = cap.analysis.findings.get(procId) ?? [];
+    const queued = cap?.analysis.queue.find(q => q.key === procId);
+    const item = !p && queued?.persistenceId != null ? cap?.model.persistence.find(i => i.id === queued.persistenceId) : undefined;
+    if (!s || !fp || !cap || (!p && !item)) return;
+    const img = p ? latestImage(p) : undefined;
+    const findings = p ? cap.analysis.findings.get(procId) ?? [] : queued?.findings ?? [];
     const severity = findings.reduce<Severity | null>(
       (best, f) => (best === null || SEVERITY_RANK[f.severity] > SEVERITY_RANK[best] ? f.severity : best), null);
     const same = (x: Verdict) => x.fingerprint === fp && x.procKey === procId;
@@ -277,8 +279,9 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     const v: Verdict = {
       sessionId: s.id, fingerprint: fp, procKey: procId, status, note: note ?? prev?.note ?? '', updated: now(),
       snapshot: {
-        name: displayName(cap.model, procId), path: img?.path ?? null, args: img?.args ?? null,
-        ruleIds: [...new Set(findings.map(f => f.ruleId))], severity, startTime: p.startTime,
+        name: p ? displayName(cap.model, procId) : `persistence: ${basename(item?.plistPath ?? null) || procId}`,
+        path: p ? img?.path ?? null : item?.executablePath ?? null, args: img?.args ?? null,
+        ruleIds: [...new Set(findings.map(f => f.ruleId))], severity, startTime: p ? p.startTime : item?.time ?? null,
       },
     };
     // Synchronous, so a second call in the same tick sees this verdict (and its note); undone if the write fails.

@@ -1,6 +1,7 @@
 import { useState, type DragEvent } from 'react';
 import { ConfirmedTab } from './ConfirmedTab';
 import { StoreErrorBanner } from './StoreErrorBanner';
+import { TriageView } from './TriageView';
 import { useSession, type View } from './session-context';
 
 // Spec §4.2, verbatim.
@@ -135,7 +136,7 @@ export function SessionScreen() {
             {activeRec ? `${activeRec.fileName} is not loaded. Drop its file above to continue.` : 'Drop a capture file above to begin.'}
           </p>
         ) : c.view === 'triage' ? (
-          <p className="placeholder">Triage: {c.triage?.queue.length ?? 0} flagged</p>
+          <TriageView />
         ) : (
           <p className="placeholder">Tree: {c.capture.model.processes.size} processes</p>
         )}

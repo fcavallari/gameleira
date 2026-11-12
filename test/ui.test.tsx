@@ -4,6 +4,7 @@ import '@testing-library/jest-dom/vitest';
 import fs from 'node:fs';
 import { File as NodeFile } from 'node:buffer';
 import { IDBFactory } from 'fake-indexeddb';
+import { useMemo, useState } from 'react';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
@@ -11,9 +12,12 @@ import { loadCapture, type LoadedCapture } from '../src/ingest/load';
 import { runLoad } from '../src/ingest/run';
 import type { Image } from '../src/model/types';
 import { latestImage } from '../src/model/util';
-import { App, SessionProvider, useSession, type SessionCtx } from '../src/ui/App';
+import { App, SessionContext, SessionProvider, useSession, type SessionCtx } from '../src/ui/App';
+import { TriageView } from '../src/ui/TriageView';
+import { applyRoutine, programKey } from '../src/session/routine';
+import { procByPid } from './helpers';
 import { StoreErrorBanner } from '../src/ui/StoreErrorBanner';
-import { openStore, type CaptureRec, type Store, type Verdict } from '../src/session/store';
+import { openStore, type CaptureRec, type Status, type Store, type Verdict } from '../src/session/store';
 import { fixture, type FixtureName } from './fixtures';
 
 // The real runLoad starts an inline Worker, which jsdom lacks; delegate to loadCapture instead.
@@ -81,7 +85,10 @@ test('loads a capture: header counts, tabs and placeholders', async () => {
   for (const re of [/^\d+ processes$/, /^\d+ flagged$/, /^\d+ confirmed$/, /^\d+ routine hidden$/]) {
     expect(within(group).getByText(re)).toBeInTheDocument();
   }
-  expect(screen.getByText(/^Triage: \d+ flagged$/)).toBeInTheDocument();
+  const queue = within(await screen.findByRole('listbox', { name: 'Flagged processes' }));
+  const flagged = Number(within(group).getByText(/^\d+ flagged$/).textContent!.split(' ')[0]);
+  if (flagged === 0) expect(screen.getByText(/nothing flagged/i)).toBeInTheDocument();
+  else expect(queue.getAllByRole('option')).toHaveLength(flagged);
   await user.click(screen.getByRole('tab', { name: 'Tree' }));
   expect(screen.getByText(/^Tree: \d+ processes$/)).toBeInTheDocument();
   await user.click(screen.getByRole('tab', { name: 'Confirmed' }));
@@ -467,3 +474,220 @@ test('two setVerdict calls in one tick keep the note', async () => {
   expect(await store.listVerdicts(sessionId, demo.fingerprint)).toMatchObject([{ status: 'benign', note: 'dropper' }]);
   expect(ctx.verdicts.get(procId)).toMatchObject({ status: 'benign', note: 'dropper' });
 });
+
+// --- Triage view (Task 10) --------------------------------------------------------------------------------------
+
+let esLabLoad: Promise<LoadedCapture> | undefined;
+/** es-lab is 28 MB: parse it once for every triage test. */
+const loadEsLab = (): Promise<LoadedCapture> => (esLabLoad ??= loadFixture('es-lab.jsonl'));
+
+interface Mocks { setVerdict: ReturnType<typeof vi.fn>; addRoutine: ReturnType<typeof vi.fn>;
+  removeRoutine: ReturnType<typeof vi.fn>; showInTree: ReturnType<typeof vi.fn> }
+
+/** TriageView on a real capture with a real `selected` state; verdict writes are mocks that update the shown verdicts. */
+function renderTriage(cap: LoadedCapture, opts: { routineKeys?: Set<string> } = {}): Mocks {
+  const mocks: Mocks = { setVerdict: vi.fn(), addRoutine: vi.fn().mockResolvedValue(true), removeRoutine: vi.fn(), showInTree: vi.fn() };
+  const routineKeys = opts.routineKeys ?? new Set<string>();
+  function Harness() {
+    const [selected, setSelected] = useState<string | null>(null);
+    const [verdicts, setVerdicts] = useState(new Map<string, Verdict>());
+    const triage = useMemo(() => applyRoutine(cap.analysis, cap.model, routineKeys), []);
+    mocks.setVerdict.mockImplementation((id: string, status: Status, note?: string) => {
+      setVerdicts(m => new Map(m).set(id, { ...seedVerdict('s', cap.fingerprint, id, status, note ?? m.get(id)?.note ?? '') }));
+      return Promise.resolve();
+    });
+    const value = { capture: cap, active: cap.fingerprint, captures: new Map([[cap.fingerprint, cap]]), triage, verdicts,
+      routineKeys, selected, selectProc: setSelected, ...mocks } as unknown as SessionCtx;
+    return <SessionContext.Provider value={value}><TriageView /></SessionContext.Provider>;
+  }
+  render(<Harness />);
+  return mocks;
+}
+
+const osascriptId = async (): Promise<string> => procByPid((await loadEsLab()).model, 40753).id;
+
+test('queue sorted high first and fake prompt explains itself', async () => {
+  renderTriage(await loadEsLab());
+  const rows = await screen.findAllByRole('option');
+  expect(within(rows[0]!).getByText('high')).toBeInTheDocument();
+  await user.click(screen.getByText(/display dialog/));
+  expect(screen.getByText(/fake a system password prompt/i)).toBeInTheDocument();
+  expect(screen.getByText(/T1056\.002/)).toBeInTheDocument();
+}, 60_000);
+
+test('launched-by chain ends in ghost label', async () => {
+  renderTriage(await loadEsLab());
+  await user.click(screen.getByText(/display dialog/));
+  expect(screen.getByText('pid 35212 · started before capture')).toBeInTheDocument();
+}, 60_000);
+
+test('confirm via keyboard persists verdict', async () => {
+  const { setVerdict } = renderTriage(await loadEsLab());
+  await user.click(screen.getByText(/display dialog/));
+  await user.keyboard('c');
+  expect(setVerdict).toHaveBeenCalledWith(await osascriptId(), 'confirmed', undefined);
+  expect(await osascriptId()).toBe('40753:3563150');
+}, 60_000);
+
+test('long args truncate in queue row', async () => {
+  renderTriage(await loadEsLab());
+  const row = (await screen.findAllByRole('option'))[0]!;
+  expect(row.querySelector('.args')).toHaveClass('truncate');   // jsdom doesn't load styles.css; .truncate carries text-overflow: ellipsis
+}, 60_000);
+
+test('rows: persistence-only row, chain marker, status icon; nothing is selected until the user picks a row', async () => {
+  renderTriage(await loadEsLab());
+  const rows = await screen.findAllByRole('option');
+  expect(rows.some(r => r.textContent?.includes('persistence: com.google.GoogleUpdater.wake.plist'))).toBe(true);
+  const whoami = rows.find(r => r.textContent?.includes('whoami'))!;
+  expect(within(whoami).getByTitle(/part of a flagged chain/i)).toBeInTheDocument();
+  expect(rows.every(r => r.getAttribute('aria-selected') === 'false')).toBe(true);
+  expect(screen.getByText(/select a flagged process/i)).toBeInTheDocument();
+}, 60_000);
+
+test('detail sections: why, launched by, details, what it did, actions', async () => {
+  renderTriage(await loadEsLab());
+  await user.click(screen.getByText(/display dialog/));
+  for (const h of [/why flagged/i, /launched by/i, /^details$/i, /what it did/i, /^actions$/i]) {
+    expect(screen.getByRole('heading', { name: h })).toBeInTheDocument();
+  }
+  expect(screen.getByText('com.apple.osascript')).toBeInTheDocument();
+  for (const b of [/confirm suspicious/i, /benign/i, /treat as routine/i, /show in tree/i]) {
+    expect(screen.getByRole('button', { name: b })).toBeInTheDocument();
+  }
+  expect(screen.getByLabelText(/note/i)).toBeInTheDocument();
+}, 60_000);
+
+test('a chain step selects that process; an unflagged one has an empty Why flagged', async () => {
+  renderTriage(await loadEsLab());
+  await user.click(screen.getByText(/display dialog/));
+  const steps = within(screen.getByRole('list', { name: /launch chain/i })).getAllByRole('button');
+  await user.click(steps[steps.length - 1]!);   // the nearest ancestor (a shell)
+  expect(screen.getByText(/not flagged on its own/i)).toBeInTheDocument();
+  expect(screen.queryByText(/fake a system password prompt/i)).not.toBeInTheDocument();
+}, 60_000);
+
+test('keys: j/k move, b marks benign, t shows in tree, n focuses the note; typing in a field is not a command', async () => {
+  const { setVerdict, showInTree } = renderTriage(await loadEsLab());
+  const sel = () => screen.getAllByRole('option').findIndex(r => r.getAttribute('aria-selected') === 'true');
+  await user.keyboard('j');
+  expect(sel()).toBe(0);
+  await user.keyboard('jj');
+  expect(sel()).toBe(2);
+  await user.keyboard('k');
+  expect(sel()).toBe(1);
+  await user.keyboard('{ArrowDown}');
+  expect(sel()).toBe(2);
+  await user.keyboard('b');
+  expect(setVerdict).toHaveBeenCalledWith(expect.any(String), 'benign', undefined);
+  await user.keyboard('t');
+  expect(showInTree).toHaveBeenCalledTimes(1);
+  await user.keyboard('n');
+  expect(screen.getByLabelText(/note/i)).toHaveFocus();
+  expect(screen.getByLabelText(/note/i)).toHaveValue('');   // the letter n was not typed into it
+
+  setVerdict.mockClear();
+  await user.type(screen.getByRole('textbox', { name: /search/i }), 'cbn');
+  expect(setVerdict).not.toHaveBeenCalled();
+}, 60_000);
+
+test('keys still work after clicking a filter (radios and checkboxes keep focus)', async () => {
+  renderTriage(await loadEsLab());
+  const sel = () => screen.getAllByRole('option').findIndex(r => r.getAttribute('aria-selected') === 'true');
+  await user.click(screen.getByRole('radio', { name: /^unreviewed$/i }));
+  await user.keyboard('j');
+  expect(sel()).toBe(0);
+  await user.click(screen.getByRole('checkbox', { name: 'low' }));
+  await user.keyboard('j');
+  expect(sel()).toBe(1);
+}, 60_000);
+
+test('persistence-only item: paths, no tree or routine, verdict keyed by its queue key', async () => {
+  const { setVerdict } = renderTriage(await loadEsLab());
+  const row = (await screen.findAllByRole('option')).find(r => r.textContent?.includes('GoogleUpdater.wake.plist'))!;
+  await user.click(row);
+  const detail = within(screen.getByRole('region', { name: /selected process/i }));
+  expect(detail.getByText('/Users/alice/Library/LaunchAgents/com.google.GoogleUpdater.wake.plist')).toBeInTheDocument();
+  expect(detail.getByText('Runs').nextElementSibling).toHaveTextContent(/GoogleUpdater\/Current\/GoogleUpdater\.app\/Contents\/MacOS\/GoogleUpdater$/);
+  expect(detail.getByText('App').nextElementSibling).toHaveTextContent(/157\.0\.8089\.2\/GoogleUpdater\.app/);
+  expect(detail.getByText(/Something registered itself to run automatically/)).toBeInTheDocument();
+  expect(detail.queryByRole('button', { name: /show in tree/i })).not.toBeInTheDocument();
+  expect(detail.queryByRole('button', { name: /routine/i })).not.toBeInTheDocument();
+  await user.keyboard('c');
+  expect(setVerdict).toHaveBeenCalledWith('i:btm:7710', 'confirmed', undefined);
+}, 60_000);
+
+test('filters: search, status and severity', async () => {
+  renderTriage(await loadEsLab());
+  const count = async () => (await screen.findAllByRole('option')).length;
+  const all = await count();
+  await user.type(screen.getByRole('textbox', { name: /search/i }), 'DITTO');
+  expect(await count()).toBe(1);
+  await user.clear(screen.getByRole('textbox', { name: /search/i }));
+  await user.type(screen.getByRole('textbox', { name: /search/i }), 'com.apple.osascript');   // signing ID
+  expect(await count()).toBe(1);
+  await user.clear(screen.getByRole('textbox', { name: /search/i }));
+  expect(await count()).toBe(all);
+
+  await user.click(screen.getByRole('checkbox', { name: 'high' }));   // untick high
+  expect((await screen.findAllByRole('option')).some(r => within(r).queryByText('high'))).toBe(false);
+  await user.click(screen.getByRole('checkbox', { name: 'high' }));
+
+  await user.click(screen.getByText(/display dialog/));
+  await user.keyboard('c');
+  await user.click(screen.getByRole('radio', { name: /^confirmed$/i }));
+  expect(await count()).toBe(1);
+  await user.click(screen.getByRole('radio', { name: /^unreviewed$/i }));
+  expect(await count()).toBe(all - 1);
+}, 60_000);
+
+test('routine hidden: counted in the footer, shown greyed on request; Treat as routine passes the image', async () => {
+  const cap = await loadEsLab();
+  const curl = procByPid(cap.model, 39838);
+  const curlImg = latestImage(curl)!;
+  const { addRoutine } = renderTriage(cap, { routineKeys: new Set([programKey(curlImg)]) });
+  const total = cap.analysis.queue.length;
+  expect(await screen.findAllByRole('option')).toHaveLength(total - 1);
+  expect(screen.getByText(/1 routine hidden/)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'show' }));
+  const rows = screen.getAllByRole('option');
+  expect(rows).toHaveLength(total);
+  const greyed = rows.filter(r => r.classList.contains('routine'));
+  expect(greyed).toHaveLength(1);
+  expect(greyed[0]).toHaveTextContent('curl');
+  await user.click(screen.getByRole('button', { name: 'hide' }));
+  expect(screen.getAllByRole('option')).toHaveLength(total - 1);
+
+  await user.click(screen.getByText(/display dialog/));
+  await user.click(screen.getByRole('button', { name: /treat as routine/i }));
+  expect(addRoutine).toHaveBeenCalledWith(latestImage(procByPid(cap.model, 40753)));
+}, 60_000);
+
+test('note is saved on blur, only when it changed', async () => {
+  const { setVerdict } = renderTriage(await loadEsLab());
+  await user.click(screen.getByText(/display dialog/));
+  const note = screen.getByLabelText(/note/i);
+  await user.click(note);
+  await user.tab();
+  expect(setVerdict).not.toHaveBeenCalled();
+  await user.type(note, 'phishing prompt');
+  await user.tab();
+  expect(setVerdict).toHaveBeenCalledWith(await osascriptId(), 'unreviewed', 'phishing prompt');
+}, 60_000);
+
+test('empty queue says so', async () => {
+  const cap = await loadEsLab();
+  renderTriage({ ...cap, analysis: { ...cap.analysis, queue: [] } });
+  expect(await screen.findByText(/nothing flagged/i)).toBeInTheDocument();
+}, 60_000);
+
+test('setVerdict accepts a persistence-only item by its queue key', async () => {
+  const { store, sessionId, demo } = await withSession('es-lab.jsonl');
+  const item = demo.analysis.queue.find(q => q.kind === 'persistence')!;
+  expect(item.key).toBe('i:btm:7710');
+  await act(async () => { await ctx.setVerdict(item.key, 'benign', 'GoogleUpdater, expected'); });
+  const [v] = await store.listVerdicts(sessionId, demo.fingerprint);
+  expect(v).toMatchObject({ procKey: 'i:btm:7710', status: 'benign', note: 'GoogleUpdater, expected' });
+  expect(v!.snapshot).toMatchObject({ name: 'persistence: com.google.GoogleUpdater.wake.plist', severity: 'med', ruleIds: ['persistence-item'] });
+  expect(ctx.verdicts.get(item.key)?.status).toBe('benign');
+}, 60_000);
