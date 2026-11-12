@@ -16,6 +16,8 @@ export interface Store {
   listSessions(): Promise<Session[]>;
   createSession(name: string): Promise<Session>;
   renameSession(id: string, name: string): Promise<void>;
+  /** Bumps `updated` to now (a capture was added or a verdict changed). No-op for an unknown id. */
+  touchSession(id: string): Promise<void>;
   deleteSession(id: string): Promise<void>;
   /** Same (session, fingerprint) → 'updated': size and counts are refreshed, `added` is kept. */
   upsertCapture(rec: CaptureRec): Promise<'added' | 'updated'>;
@@ -76,6 +78,12 @@ export async function openStore(name: string = DB_NAME): Promise<Store> {
       const tx = db.transaction('sessions', 'readwrite');
       const s = await tx.store.get(id);
       if (s) await tx.store.put({ ...s, name: sessionName, updated: now() });
+      await tx.done;
+    },
+    async touchSession(id) {
+      const tx = db.transaction('sessions', 'readwrite');
+      const s = await tx.store.get(id);
+      if (s) await tx.store.put({ ...s, updated: now() });
       await tx.done;
     },
     async deleteSession(id) {

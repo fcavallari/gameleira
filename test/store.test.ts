@@ -88,3 +88,15 @@ test('isRiskyRoutine warns for shells', () => {
   expect(isRiskyRoutine(img(null))).toBe(false);
   expect(isRiskyRoutine(img('/Applications/OrbStack.app/Contents/MacOS/xbin/docker-tools'))).toBe(false);
 });
+
+test('touchSession bumps updated and nothing else', async () => {
+  const s = await store.createSession('lab');
+  await new Promise(r => setTimeout(r, 5));
+  await store.touchSession(s.id);
+  const [after] = await store.listSessions();
+  expect(after!.updated > s.updated).toBe(true);
+  expect(after!.name).toBe('lab');
+  expect(after!.created).toBe(s.created);
+  await store.touchSession('missing');   // unknown id is a no-op
+  expect(await store.listSessions()).toHaveLength(1);
+});

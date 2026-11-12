@@ -26,9 +26,10 @@ const cspPlugin = (): Plugin => ({
   },
 });
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [react(), viteSingleFile(), cspPlugin()],
   server: { fs: { allow: [path.resolve(import.meta.dirname, '..'), import.meta.dirname] } },
-  define: { __FIXTURES_DIR__: JSON.stringify(path.resolve(import.meta.dirname, '..')) },
+  // The dev-only fixture autoload needs the fixtures dir; a production build must not carry a local path.
+  define: command === 'serve' ? { __FIXTURES_DIR__: JSON.stringify(path.resolve(import.meta.dirname, '..')) } : {},
   test: { environment: 'node' },
-});
+}));

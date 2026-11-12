@@ -14,6 +14,7 @@ export function runLoad(file: File, onProgress: ProgressFn): Promise<LoadedCaptu
       else { finish(); reject(new Error(m.message)); }
     };
     w.onerror = (e) => { finish(); reject(new Error(e.message || 'Worker failed')); };
+    w.onmessageerror = () => { finish(); reject(new Error('Worker reply could not be read')); };
     w.postMessage({ file });
   });
 }
