@@ -22,21 +22,25 @@ export const RECON_TOOLS: Set<string> = new Set([
   'airport', 'scutil', 'networksetup', 'security', 'csrutil', 'spctl',
 ]);
 
-/** Temporary, download, removable-media and buried hidden locations a normal install never runs from. */
+/** Temporary, download, removable-media and translocated locations a normal install never runs from. */
 const STRONG_LOCATIONS: RegExp[] = [
   /^\/tmp\//, /^\/var\/folders\//, /^\/Users\/Shared\//, /^\/Users\/[^/]+\/Downloads\//,
   /^\/Volumes\//, /\/AppTranslocation\//,
-  // A hidden directory below a visible one, e.g. ~/Desktop/.hidden/.
-  /^\/Users\/[^/]+\/[^/.][^/]*\/(?:[^/]+\/)*\.[^/]+\//,
 ];
+/** A hidden directory below a visible one under home, e.g. ~/Desktop/.hidden/. */
+const BURIED_HIDDEN = /^\/Users\/[^/]+\/[^/.][^/]*\/(?:[^/]+\/)*\.[^/]+\//;
 /** A dot-directory directly under home (~/.cargo, ~/.nvm, ~/.local): where developer tooling lives. */
-const WEAK_LOCATION = /^\/Users\/[^/]+\/\.[^/]+\//;
+const HOME_DOT_DIR = /^\/Users\/[^/]+\/\.[^/]+\//;
+/** Project tooling directories (hooks, virtualenvs, package installs): weak at any depth. */
+const TOOLING_DIRS = new Set(['.git', '.venv', 'venv', '.tox', '.direnv', '.husky', 'node_modules', '.pnpm-store']);
 
 export type Location = 'strong' | 'weak' | null;
 export function oddLocation(path: string): Location {
   const p = normPath(path);
   if (STRONG_LOCATIONS.some(re => re.test(p))) return 'strong';
-  return WEAK_LOCATION.test(p) ? 'weak' : null;
+  if (p.split('/').slice(0, -1).some(seg => TOOLING_DIRS.has(seg))) return 'weak';
+  if (BURIED_HIDDEN.test(p)) return 'strong';
+  return HOME_DOT_DIR.test(p) ? 'weak' : null;
 }
 export function isUserWritable(path: string): boolean {
   return oddLocation(path) !== null;

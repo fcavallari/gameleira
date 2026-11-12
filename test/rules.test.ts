@@ -128,6 +128,23 @@ describe('odd-location strong/weak split', () => {
   });
 });
 
+describe('project tooling dirs are weak', () => {
+  const script = (path: string) =>
+    ({ ...apple('/bin/sh', ['/bin/sh', path]), script: path });
+  test('git hook script is not queued outside a chain', () => {
+    const a = analyzed(script('/Users/u/proj/.git/hooks/pre-commit'));
+    expect(a.queue).toHaveLength(0);
+    expect(a.contextOnly.get('100:1')?.map(f => f.ruleId)).toContain('odd-location-exec');
+  });
+  test('virtualenv pip script is not queued', () =>
+    expect(analyzed(script('/Users/u/proj/.venv/bin/pip')).queue).toHaveLength(0));
+  test('a .git under /tmp stays strong', () => {
+    const a = analyzed(script('/tmp/x/.git/hooks/y'));
+    expect(a.queue[0]?.severity).toBe('med');
+    expect(a.queue[0]?.findings.map(f => f.ruleId)).toContain('odd-location-exec');
+  });
+});
+
 describe('short-flag clusters', () => {
   test('xattr -cr strips quarantine', () => expect(queuedRules(apple('/usr/bin/xattr', ['xattr', '-cr', 'X.app']))).toContain('quarantine-strip'));
   test('xattr -rd com.apple.quarantine strips quarantine', () =>
