@@ -93,7 +93,20 @@ const PROXY_SWITCHES = ['-setwebproxystate', '-setsecurewebproxystate', '-setaut
 const NETWORKSETUP_WRITE = /^-(?:set|create|delete|remove|add|order|switch|import|detect)/i;
 
 /** add-trusted-cert options that take a value; -d (admin) and the like do not. */
-const TRUSTED_CERT_SPEC = { shortValues: 'rpaseuktioR', longValues: [] };
+const TRUSTED_CERT_SPEC = { shortValues: 'rpaseuktio', longValues: [] };
+
+/** spctl options that name a rule, and options whose value is not a rule (`--type execute`). */
+const SPCTL_NAMING = ['--label', '--rule', '--path', '--hash', '--anchor', '--requirement'];
+const SPCTL_VALUES = ['--type', '-t', '--context', '--priority'];
+function spctlNamesRule(a: string[]): boolean {
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    if (SPCTL_NAMING.some(o => x === o || x.startsWith(`${o}=`))) return true;
+    if (SPCTL_VALUES.includes(x)) { i++; continue; }
+    if (!x.startsWith('-')) return true;                                 // a path to the app or file
+  }
+  return false;
+}
 
 const MACOS15 = 'From macOS 15, spctl no longer supports changing the rule database or the global state, so there it is only an attempt.';
 
@@ -106,13 +119,14 @@ function settingChange(n: string, a: string[], cmd: string): MatchResult | null 
         explanation: `Ran \`spctl ${off}\`, which asks macOS to turn Gatekeeper off. On macOS 14 and earlier (as root) this disables it; from macOS 15 it only reveals the "Allow applications from Anywhere" option in Privacy & Security, which someone must still pick.` };
     }
     if (off === '--disable') {
-      // A rule named by --label, --rule or a path: disabling an allow rule makes Gatekeeper stricter, disabling a deny rule looser.
-      const named = a.some(x => x === '--label' || x === '--rule' || x.startsWith('--label=') || x.startsWith('--rule=') || !x.startsWith('-'));
+      // A rule named by --label, --rule, --path, --hash, --anchor, --requirement or a bare path. Which way that moves
+      // Gatekeeper (an allow rule off is stricter, a deny rule off is looser) can't be told from the arguments, so med.
+      const named = spctlNamesRule(a);
       return named
-        ? { evidence: cmd, severity: 'high', mitre: ['T1562.001'], title: 'Tried to change a Gatekeeper rule',
+        ? { evidence: cmd, severity: 'med', mitre: ['T1562.001'], title: 'Tried to change a Gatekeeper rule',
           explanation: `Ran \`spctl --disable\` on a named Gatekeeper rule. Disabling a rule that allows software makes Gatekeeper stricter; disabling one that blocks software lets it through. Check which rule it named. ${MACOS15}` }
         : { evidence: cmd, severity: 'high', mitre: ['T1562.001'], title: 'Tried to disable Gatekeeper rules',
-          explanation: `Ran \`spctl --disable\` with no rule named, which tries to disable Gatekeeper's assessment rules; on older macOS (as root) this stopped the checks. ${MACOS15}` };
+          explanation: `Ran \`spctl --disable\` with no rule named, which tries to disable Gatekeeper's assessment rules; on older macOS (as root) this may have stopped the checks. ${MACOS15}` };
     }
     if (a.includes('--add')) {
       return { evidence: cmd, severity: 'high', mitre: ['T1553.001'], title: 'Tried to add a Gatekeeper exception',
@@ -218,7 +232,7 @@ function keychainFinding(args: string[]): MatchResult | null {
     if (browser) {
       return { evidence: '', severity: 'high',
         explanation: safeService || vals('l').some(v => SAFE_STORAGE.test(v))
-          ? `Printed an app's Safe Storage encryption key with \`${cmd}\` (browsers and Electron apps keep their saved passwords and cookies behind it). Stealers grab these keys first.`
+          ? `Printed an app's Safe Storage encryption key with \`${cmd}\` (Chromium-based browsers and Electron apps keep their saved passwords and cookies behind it). Stealers grab these keys first.`
           : `Printed a browser's Safe Storage key with \`${cmd}\` (the browser named as the account). That key decrypts the browser's saved passwords and cookies; stealers grab it first.` };
     }
     if (names.some(v => WALLET.test(v))) {
@@ -470,7 +484,7 @@ export const RULES: Rule[] = [
   },
   {
     id: 'keychain-access', title: 'Keychain read with security', severity: 'high', gated: 'when-low',
-    explanation: 'Ran `security` against the macOS keychain. High when it prints a browser Safe Storage key or a crypto wallet entry (find-generic-password / find-internet-password with -g or -w), or dumps every secret (dump-keychain -d); med when it prints any other saved password; low (context only) for attribute lookups, unlock-keychain, export and dump-keychain without -d.',
+    explanation: 'Ran `security` against the macOS keychain. High when it prints an app\'s Safe Storage key (Chromium-based browsers and Electron apps) or a crypto wallet entry (find-generic-password / find-internet-password with -g or -w), or dumps every secret (dump-keychain -d); med when it prints any other saved password; low (context only) for attribute lookups, unlock-keychain, export and dump-keychain without -d.',
     mitre: ['T1555.001'], scope: 'image',
     match: ({ img }) => {
       if (basename(img.path) !== 'security') return null;
@@ -480,7 +494,7 @@ export const RULES: Rule[] = [
   },
   {
     id: 'security-setting-change', title: 'Security setting changed', severity: 'high',
-    explanation: 'Tried to weaken a macOS protection: turn Gatekeeper off or add an exception (spctl --master-disable, --global-disable, --disable, --add), turn System Integrity Protection off in whole or part (csrutil disable, csrutil authenticated-root disable, csrutil enable --without), trust a root certificate or change the trust settings of a certificate (security add-trusted-cert), or change an authorization rule (security authorizationdb write); or pointed web or DNS traffic elsewhere (networksetup -setwebproxy, -setsecurewebproxy, -setautoproxyurl, -setsocksfirewallproxy, -setdnsservers, or switching a proxy on).',
+    explanation: 'Tried to weaken a macOS protection: turn Gatekeeper off, change a Gatekeeper rule, or add an exception (spctl --master-disable, --global-disable, --disable, --add), turn System Integrity Protection off in whole or part (csrutil disable, csrutil authenticated-root disable, csrutil enable --without), trust a root certificate or change the trust settings of a certificate (security add-trusted-cert), or change an authorization rule (security authorizationdb write); or pointed web or DNS traffic elsewhere (networksetup -setwebproxy, -setsecurewebproxy, -setautoproxyurl, -setsocksfirewallproxy, -setdnsservers, or switching a proxy on).',
     mitre: ['T1562.001', 'T1553.001', 'T1553.004', 'T1553', 'T1548', 'T1557'], scope: 'image',
     match: ({ img }) => settingChange(basename(img.path), rest(img), cmdline(img)),
   },
@@ -589,7 +603,7 @@ export const RULES: Rule[] = [
   },
   {
     id: 'shell-from-pipe', title: 'Shell or interpreter reading commands from a pipe', severity: 'med',
-    explanation: "A shell, or python, perl or ruby, ran commands piped into it (the `curl … | bash` pattern), so there's no script file on disk to inspect. Version and help probes before the script starts do not count: --version and --help; for python also -V, -VV, -h; for perl -v, -V, -h; for ruby -v (unless a script follows) and -h.",
+    explanation: "A shell, or python, perl or ruby, ran commands piped into it (the `curl … | bash` pattern), so there's no script file on disk to inspect. Version and help probes before the script starts do not count: --version and --help; for python also -V, -VV, -h; for perl -v, -V, -h; for ruby -h, -v (unless a bare -v is followed by -) and -V, which ruby rejects as invalid and exits.",
     mitre: ['T1059.004', 'T1059.006', 'T1059'], scope: 'image',
     match: ({ p, img, imgIndex }) => {
       const lang = pipeLang(img);

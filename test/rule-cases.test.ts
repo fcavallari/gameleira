@@ -741,7 +741,7 @@ describe('fix round 2', () => {
       const r = RULES.find(x => x.id === 'shell-from-pipe')!;
       expect(r.explanation).toMatch(/--version/);
       expect(r.explanation).toMatch(/for python also -V, -VV, -h/);
-      expect(r.explanation).not.toMatch(/ruby[^.;]*-V/);
+      expect(r.explanation).toMatch(/-V, which ruby rejects as invalid and exits/);
     });
   });
 
@@ -920,9 +920,9 @@ describe('fix round 3', () => {
 
   describe('probe edge cases', () => {
     const fires = (path: string, args: string[]) => findingsOf(path, args, { stdinIsPipe: true }).some(f => f.ruleId === 'shell-from-pipe');
-    test('ruby -V and -VV are not probes', () => {
-      expect(fires('/usr/bin/ruby', ['ruby', '-V'])).toBe(true);
-      expect(fires('/usr/bin/ruby', ['ruby', '-VV'])).toBe(true);
+    test('ruby rejects -V and -VV as invalid options and exits, so they do not fire', () => {
+      expect(fires('/usr/bin/ruby', ['ruby', '-V'])).toBe(false);
+      expect(fires('/usr/bin/ruby', ['ruby', '-VV'])).toBe(false);
     });
     test('probe letters inside python and perl clusters', () => {
       expect(fires('/usr/bin/python3', ['python3', '-uV'])).toBe(false);
@@ -942,5 +942,41 @@ describe('fix round 3', () => {
     expect(f.mitre).toEqual(['T1562.001']);
     expect(f.explanation).toMatch(/Recovery/);
     expect(setting('/usr/bin/csrutil', ['csrutil', 'enable'])).toBeUndefined();
+  });
+});
+
+describe('fix round 4', () => {
+  const findingsOf = (path: string, args: string[], o: Parameters<typeof apple>[2] = {}) =>
+    allFindings(analyze(capture([proc('100:1', [apple(path, args, o)])])));
+  const setting = (args: string[]) => findingsOf('/usr/sbin/spctl', ['spctl', ...args]).find(f => f.ruleId === 'security-setting-change');
+  const fires = (path: string, args: string[]) => findingsOf(path, args, { stdinIsPipe: true }).some(f => f.ruleId === 'shell-from-pipe');
+
+  test('spctl --disable on a named rule is med; unnamed, master and global stay high', () => {
+    for (const args of [['--disable', '--label', 'X'], ['--disable', '--rule', '42'], ['--disable', '--path', '/Applications/X.app'], ['--disable', '/Applications/X.app']])
+      expect(setting(args)!.severity, args.join(' ')).toBe('med');
+    for (const args of [['--disable'], ['--disable', '--type', 'execute'], ['--master-disable'], ['--global-disable']])
+      expect(setting(args)!.severity, args.join(' ')).toBe('high');
+    expect(setting(['--disable', '--type', 'execute'])!.title).toBe('Tried to disable Gatekeeper rules');
+    expect(setting(['--disable'])!.explanation).toMatch(/may have stopped the checks/);
+  });
+
+  test('rule-level explanations', () => {
+    expect(RULES.find(r => r.id === 'security-setting-change')!.explanation).toMatch(/turn Gatekeeper off, change a Gatekeeper rule, or add an exception/);
+    expect(RULES.find(r => r.id === 'keychain-access')!.explanation).toMatch(/an app's Safe Storage key \(Chromium-based browsers and Electron apps\)/);
+    const f = findingsOf('/usr/bin/security', ['security', 'find-generic-password', '-w', '-s', 'Chrome Safe Storage']).find(x => x.ruleId === 'keychain-access')!;
+    expect(f.explanation).toMatch(/Chromium-based browsers and Electron apps/);
+  });
+
+  test('ruby probe letters in clusters; only a bare -v followed by - reads stdin', () => {
+    expect(fires('/usr/bin/ruby', ['ruby', '-wv'])).toBe(false);
+    expect(fires('/usr/bin/ruby', ['ruby', '-vw'])).toBe(false);
+    expect(fires('/usr/bin/ruby', ['ruby', '-wv', '-'])).toBe(false);
+    expect(fires('/usr/bin/ruby', ['ruby', '-v', '-'])).toBe(true);
+    expect(fires('/usr/bin/ruby', ['ruby', '-w'])).toBe(true);
+  });
+
+  test('perl -i<ext> carries its value attached', () => {
+    expect(fires('/usr/bin/perl', ['perl', '-i.bak'])).toBe(true);
+    expect(fires('/usr/bin/perl', ['perl', '-ie'])).toBe(true);
   });
 });

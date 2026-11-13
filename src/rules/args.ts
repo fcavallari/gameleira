@@ -99,14 +99,14 @@ export const PIPE_LANGS: [RegExp, PipeLang][] = [
   // -c code, -m module; -W and -X take a value; -V, -VV, -h print and exit.
   [/^python[0-9.]*$/, { mitre: 'T1059.006', inline: 'cm', stdinFlag: '', valueOpts: ['-W', '-X'], attached: 'WX',
     probes: ['--version', '--help', '-V', '-VV', '-h'], probeLetters: 'Vh', probesYield: [], longs: [], longValues: [] }],
-  // -e/-E code (also in clusters such as -ne, -0777pe); -I, -M, -m, -x, -d carry their value attached;
-  // -v, -V, -h print and exit (even with a `-` after them).
-  [/^perl[0-9.]*$/, { mitre: 'T1059', inline: 'eE', stdinFlag: '', valueOpts: [], attached: 'IMmxd',
+  // -e/-E code (also in clusters such as -ne, -0777pe); -I, -M, -m, -x, -d, -i (in-place extension) carry their
+  // value attached; -v, -V, -h print and exit (even with a `-` after them).
+  [/^perl[0-9.]*$/, { mitre: 'T1059', inline: 'eE', stdinFlag: '', valueOpts: [], attached: 'IMmxdi',
     probes: ['--version', '--help', '-V', '-h', '-v'], probeLetters: 'Vvh', probesYield: [], longs: [], longValues: [] }],
-  // -e code; -I, -r, -C, -E take a value; -h prints help; -v prints the version and exits, unless a script follows
-  // (`ruby -v -` then reads stdin). -V is not a ruby option.
+  // -e code; -I, -r, -C, -E take a value; -h prints help; -v prints the version and exits, unless `-` follows a bare
+  // `-v` (`ruby -v -` then reads stdin; `ruby -wv -` does not). -V is not a ruby option: ruby rejects it and exits.
   [/^ruby[0-9.]*$/, { mitre: 'T1059', inline: 'e', stdinFlag: '', valueOpts: ['-I', '-r', '-C', '-E'], attached: 'IrCE',
-    probes: ['--version', '--help', '-h', '-v'], probeLetters: '', probesYield: ['-v'], longs: [], longValues: [] }],
+    probes: ['--version', '--help', '-h', '-v', '-V', '-VV'], probeLetters: 'hvV', probesYield: ['-v'], longs: [], longValues: [] }],
 ];
 
 /**
