@@ -51,6 +51,9 @@ function NodeItem({ row, cap, flag, routine, status, selected, onSelect, style, 
       {flag && <span className={`status st-${st}`} title={st} aria-label={st}>{STATUS_ICON[st]}</span>}
       <span className="tname truncate" title={label}>{label}</span>{' '}
       {proc && !proc.ghost && <span className="tpid muted">pid {proc.pid}</span>}
+      {flag?.reconBurst && (
+        <span className="chain-mark" title="One of 3 or more different reconnaissance tools run under the same parent within 60 seconds">recon burst</span>
+      )}
       {flag?.inFlaggedChain && (
         <span className="chain-mark" title="Part of a flagged chain: it ran under, or as part of, something that was flagged">in chain</span>
       )}

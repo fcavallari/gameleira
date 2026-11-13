@@ -34,6 +34,9 @@ function Row({ row, selected, onSelect, style }: {
           routine program — kept: {row.routineKept}
         </span>
       )}
+      {item.reconBurst && (
+        <span className="chain-mark" title="One of 3 or more different reconnaissance tools run under the same parent within 60 seconds">recon burst</span>
+      )}
       {item.inFlaggedChain && (
         <span className="chain-mark" title="Part of a flagged chain: it ran under, or as part of, something that was flagged">in chain</span>
       )}

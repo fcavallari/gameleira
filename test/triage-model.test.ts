@@ -2,6 +2,7 @@ import { expect, test } from 'vitest';
 import type { LoadedCapture } from '../src/ingest/load';
 import type { Image, Process } from '../src/model/types';
 import type { CaptureStats } from '../src/model/types';
+import { itemPathKind } from '../src/model/util';
 import { captureInfo, itemArgs, rowArgs } from '../src/ui/triage-model';
 import { procByPid, queued } from './helpers';
 
@@ -53,4 +54,14 @@ test('captureInfo flags captures older than schema 11, and says nothing when the
   expect(captureInfo(stats({ versions: [6] }))).toEqual({ line: 'schema v6', older: true });
   expect(captureInfo(stats({ versions: [6, 11] })).older).toBe(false);
   expect(captureInfo(stats({ versions: [] }))).toEqual({ line: null, older: false });
+});
+
+test('itemPathKind tells a plist from an app bundle (a login item\'s item URL is the app)', () => {
+  expect(itemPathKind('/Users/u/Library/LaunchAgents/x.plist')).toBe('plist');
+  expect(itemPathKind('/Library/LaunchDaemons/X.PLIST')).toBe('plist');
+  expect(itemPathKind('/Applications/Evil.app/')).toBe('app');
+  expect(itemPathKind('/Applications/Evil.app')).toBe('app');
+  expect(itemPathKind('/Users/u/some/other/thing')).toBe('other');
+  expect(itemPathKind(null)).toBeNull();
+  expect(itemPathKind('')).toBeNull();
 });

@@ -20,8 +20,11 @@ import { SessionScreen } from '../src/ui/SessionScreen';
 import { TreeView } from '../src/ui/TreeView';
 import { TriageView } from '../src/ui/TriageView';
 import { DEFAULT_FILTERS, toggleStatus, type TriageFilters } from '../src/ui/triage-model';
+import { MITRE_NAMES } from '../src/rules/mitre';
 import { applyRoutine, keepReason, programKey } from '../src/session/routine';
+import { analyze } from '../src/rules/engine';
 import { procByPid, queued } from './helpers';
+import { apple, capture, img as synthImg, persistenceItem, proc } from './synth';
 import { StoreErrorBanner } from '../src/ui/StoreErrorBanner';
 import { openStore, type CaptureRec, type Status, type Store, type Verdict } from '../src/session/store';
 import { fixture, type FixtureName } from './fixtures';
@@ -887,6 +890,110 @@ test('a selected persistence-only row is still selected after Triage, Tree, Tria
   await user.click(list().getAllByRole('option').find(r => /display dialog/.test(r.textContent ?? ''))!);
   expect(back).toHaveAttribute('aria-selected', 'false');
 }, 60_000);
+
+// --- launch items, traits, recon bursts, the newer rules ------------------------------------------------------------
+
+/** A loaded capture built from hand-made processes, with the real rules run over it. */
+const synthCapture = (model: CaptureModel): LoadedCapture => ({ fingerprint: 'syn', fileName: 'syn.jsonl', size: 1, model, analysis: analyze(model) });
+const pane = () => within(screen.getByRole('region', { name: /selected process/i }));
+/** The value next to a label in the pane's description lists. */
+const field = (label: string): HTMLElement => pane().getByText(label, { selector: 'dt' }).nextElementSibling as HTMLElement;
+
+test('a process row that carries a persistence finding shows its launch item: type, plist, who registered it, who the finding is on', async () => {
+  const cap = await loadEsLab();
+  renderTriage(cap);
+  await user.click(screen.getAllByRole('option').find(r => r.textContent?.startsWith('high') && r.textContent.includes('cat'))!);
+  expect(pane().getByRole('heading', { name: 'Launch item' })).toBeInTheDocument();
+  expect(field('Item type')).toHaveTextContent('Launch agent');
+  expect(field('Plist')).toHaveTextContent(/\/Library\/LaunchAgents\/com\.test\.studyguide\.plist$/);
+  expect(field('Runs')).toHaveTextContent('/bin/sh');
+  expect(field('Registered by')).toHaveTextContent('smd (instigator)');   // the XPC caller; es-lab's event has no app
+  expect(field('Reported by')).toHaveTextContent(/backgroundtaskmanagementd/);   // the daemon that emitted the event is not the registrant
+  expect(field('Finding on')).toHaveTextContent('this process (plist writer)');
+  expect(pane().getAllByText(/T1543\.001 · Launch Agent/).length).toBeGreaterThan(0);
+}, 60_000);
+
+test('a launch item that no process owns shows no registrant and says it stands alone', async () => {
+  renderTriage(await loadEsLab());
+  await user.click(screen.getAllByRole('option').find(r => r.textContent?.includes('GoogleUpdater.wake.plist'))!);
+  expect(field('Item type')).toHaveTextContent('Launch agent');
+  expect(field('Registered by')).toHaveTextContent('smd (instigator)');
+  expect(field('Finding on')).toHaveTextContent(/no process: this item stands alone/);
+}, 60_000);
+
+test('a login item whose URL is the app bundle is labelled App, not Plist, and names its app as the registrant', async () => {
+  const exe = '/Applications/Evil.app/Contents/MacOS/Evil';
+  const evil = proc('900:1', [synthImg({ path: exe, args: ['Evil'], signingId: 'evil', csFlags: 0x2, seq: 1, token: '900:1' })], { originalParent: null });
+  const cap = synthCapture(capture([evil], [persistenceItem({
+    id: 'btm:5', itemType: 2, plistPath: '/Applications/Evil.app/', appPath: '/Applications/Evil.app/', executablePath: exe,
+    app: '900:1', emitter: '900:1', seq: 5,
+  })]));
+  renderTriage(cap);
+  await user.click(screen.getAllByRole('option').find(r => r.textContent?.includes('Evil'))!);
+  expect(field('Item type')).toHaveTextContent('Login item');
+  expect(pane().queryByText('Plist', { selector: 'dt' })).not.toBeInTheDocument();
+  expect(field('App')).toHaveTextContent('/Applications/Evil.app/');
+  expect(pane().getAllByText('App', { selector: 'dt' })).toHaveLength(1);   // the same URL is not listed twice
+  expect(field('Runs')).toHaveTextContent(exe);
+  expect(field('Registered by')).toHaveTextContent('Evil (app)');
+  expect(field('Finding on')).toHaveTextContent('this process (app)');
+  expect(pane().getAllByText(/T1547\.015 · Login Items/).length).toBeGreaterThan(0);
+  expect(pane().queryByText(/T1543/)).not.toBeInTheDocument();
+});
+
+test('a trait finding says it is a trait, not an attack technique, instead of an empty MITRE row', async () => {
+  const cap = await loadFixture('shlayer.json');
+  renderTriage(cap);
+  const i = cap.analysis.queue.findIndex(q => q.findings.some(f => f.ruleId === 'unsigned'));
+  await user.click(screen.getAllByRole('option')[i]!);
+  const label = screen.getByText('trait, not an attack technique');
+  const block = label.closest('article')!;
+  expect(block).toHaveTextContent(/unsigned/i);
+  expect(block.querySelectorAll('[title="MITRE ATT&CK technique"]')).toHaveLength(0);
+  // a technique finding shows technique chips and no trait label
+  const other = cap.analysis.queue.findIndex(q => q.findings.some(f => !f.trait && f.mitre.length > 0));
+  await user.click(screen.getAllByRole('option')[other]!);
+  expect(pane().queryByText('trait, not an attack technique')).not.toBeInTheDocument();
+}, 60_000);
+
+test('recon burst rows are marked in the queue, the tree and the detail pane', async () => {
+  const cap = await loadFixture('atomic_stealer.json');
+  const bursts = cap.analysis.queue.filter(q => q.reconBurst);
+  expect(bursts.length).toBeGreaterThan(0);
+  runLoadMock.mockResolvedValue(cap);
+  await openWith(await openStore());
+  await drop('atomic_stealer.json');
+  const list = () => within(screen.getByRole('listbox', { name: /flagged/i }));
+  expect(list().getAllByText('recon burst')).toHaveLength(bursts.length);
+  const row = list().getAllByRole('option').find(r => r.textContent?.includes('recon burst'))!;
+  await user.click(row);
+  expect(pane().getByText(/3 or more different reconnaissance tools run under the same parent within 60 seconds/)).toBeInTheDocument();
+  await user.click(screen.getByRole('tab', { name: 'Tree' }));
+  expect(within(screen.getByRole('tree', { name: 'Process tree' })).getAllByText('recon burst').length).toBeGreaterThan(0);
+}, 60_000);
+
+test('the newer rules show title, explanation, evidence and their technique', async () => {
+  const sec = apple('/usr/bin/security', ['security', 'find-generic-password', '-ga', 'Chrome']);
+  const osa = apple('/usr/bin/osascript', ['osascript', '/tmp/x.scpt'], { token: '101:1' });
+  const csr = apple('/usr/sbin/spctl', ['spctl', '--master-disable'], { token: '102:1' });
+  const cap = synthCapture(capture([proc('100:1', [{ ...sec, token: '100:1' }]), proc('101:1', [osa]), proc('102:1', [csr])]));
+  renderTriage(cap);
+  const rows = screen.getAllByRole('option');
+  // Each finding's title, explanation, evidence and every technique it cites (with the technique's name) are on screen.
+  const open = async (ruleId: string, evidence: RegExp): Promise<void> => {
+    const q = cap.analysis.queue.find(x => x.findings.some(f => f.ruleId === ruleId))!;
+    const f = q.findings.find(x => x.ruleId === ruleId)!;
+    await user.click(rows[cap.analysis.queue.indexOf(q)]!);
+    expect(pane().getAllByText(f.title).length).toBeGreaterThan(0);
+    expect(pane().getByText(f.explanation)).toBeInTheDocument();
+    expect(pane().getAllByText(evidence).length).toBeGreaterThan(0);
+    expect(f.mitre.length).toBeGreaterThan(0);
+    for (const id of f.mitre) expect(pane().getByText(`${id} · ${MITRE_NAMES[id]}`)).toBeInTheDocument();
+  };
+  await open('keychain-access', /find-generic-password -ga Chrome/);
+  await open('osascript-script', /\/tmp\/x\.scpt/);
+  await open('security-setting-change', /spctl --master-disable/);
+});
 
 test('filters: search, status and severity', async () => {
   renderTriage(await loadEsLab());

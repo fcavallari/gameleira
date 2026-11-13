@@ -335,7 +335,7 @@ const HOME_CACHES = /^\/Users\/[^/]+\/Library\/Caches\//i;
  * itself (a login item) or relative to the app URL; so: an absolute executable, else the executable joined to the app,
  * else the app bundle. null when nothing can be placed.
  */
-function launchTarget(item: PersistenceItem): { path: string; isApp: boolean } | null {
+export function launchTarget(item: PersistenceItem): { path: string; isApp: boolean } | null {
   const exe = item.executablePath !== null && item.executablePath !== '' ? item.executablePath : null;
   const app = item.appPath !== null && item.appPath.startsWith('/') ? trimSlash(item.appPath) : null;
   if (exe !== null && exe.startsWith('/')) return { path: exe, isApp: false };

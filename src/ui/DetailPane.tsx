@@ -8,6 +8,7 @@ import { MITRE_NAMES } from '../rules/mitre';
 import type { Severity } from '../rules/rules';
 import { NO_IDENTITY, programKey } from '../session/routine';
 import type { Status } from '../session/store';
+import { LaunchItem } from './LaunchItem';
 import { useSession } from './session-context';
 import { fmtArgs, fmtTime } from './triage-model';
 
@@ -36,18 +37,29 @@ function FindingBlock({ f }: { f: Finding }) {
         {f.mitre.map(id => (
           <span key={id} className="chip" title="MITRE ATT&CK technique">{MITRE_NAMES[id] ? `${id} · ${MITRE_NAMES[id]}` : id}</span>
         ))}
+        {f.trait && f.mitre.length === 0 && (
+          <span className="chip trait" title="A property common in malware, but also in harmless software: it says how suspicious a binary looks, not what an attacker did.">trait, not an attack technique</span>
+        )}
       </div>
       <div className="evidence"><span className="muted small">Evidence</span><code className="mono wrap">{f.evidence}</code></div>
     </article>
   );
 }
 
-function Why({ findings }: { findings: Finding[] }) {
+function Why({ findings, item }: { findings: Finding[]; item?: QueueItem }) {
   return (
     <Section id="d-why" title="Why flagged">
       {findings.length > 0
         ? findings.map((f, i) => <FindingBlock key={`${f.ruleId}:${i}`} f={f} />)
         : <p className="muted">Not flagged on its own. You are looking at it because of where it sits in a chain or tree.</p>}
+      {item?.reconBurst && (
+        <p className="small"><span className="chain-mark">recon burst</span>{' '}
+          <span className="muted">Queued because it was one of 3 or more different reconnaissance tools run under the same parent within 60 seconds. Each one is common on its own; together they look like someone sizing up the machine.</span></p>
+      )}
+      {item?.inFlaggedChain && (
+        <p className="small"><span className="chain-mark">in chain</span>{' '}
+          <span className="muted">Queued because it ran under, or as part of, something that was flagged.</span></p>
+      )}
     </Section>
   );
 }
@@ -259,29 +271,34 @@ function Actions({ vkey, p, noteRef }: { vkey: string; p: Process | null; noteRe
   );
 }
 
-function PersistenceDetail({ cap, q, noteRef }: { cap: LoadedCapture; q: QueueItem; noteRef: RefObject<HTMLTextAreaElement | null> }) {
+function PersistenceDetail({ cap, q, onSelect, noteRef }: {
+  cap: LoadedCapture; q: QueueItem; onSelect(id: ProcId): void; noteRef: RefObject<HTMLTextAreaElement | null>;
+}) {
   const item = cap.model.persistence.find(i => i.id === q.persistenceId);
-  const emitterId = item && cap.model.processes.has(item.emitter) ? item.emitter : undefined;
-  const rows: [string, ReactNode][] = [];
-  if (item) {
-    rows.push(['Plist', <code className="mono wrap">{item.plistPath ?? 'unknown'}</code>]);
-    rows.push(['Runs', <code className="mono wrap">{item.executablePath ?? 'unknown'}</code>]);
-    if (item.appPath) rows.push(['App', <code className="mono wrap">{item.appPath}</code>]);
-    rows.push(['Time', <span className="mono">{fmtTime(item.time)}</span>]);
-    if (emitterId) rows.push(['Registered by', displayName(cap.model, emitterId)]);
-  }
   return (
     <>
       <header className="dhead">
         <h2>{`persistence: ${basename(item?.plistPath ?? null) || q.key}`}</h2>
         <p className="muted small">A launch item registered while the capture ran. No captured process is tied to it, so there is no launch chain.</p>
       </header>
-      <Why findings={q.findings} />
+      <Why findings={q.findings} item={q} />
       <Section id="d-details" title="Details">
-        {item ? <Dl rows={rows} /> : <p className="muted">Launch item details are not available.</p>}
+        {item ? <LaunchItem cap={cap} item={item} current={null} onSelect={onSelect} /> : <p className="muted">Launch item details are not available.</p>}
       </Section>
       <Actions vkey={q.key} p={null} noteRef={noteRef} />
     </>
+  );
+}
+
+/** The launch items a process's findings are about: the process registered one, or wrote the plist of one. */
+function LaunchItems({ cap, p, findings, onSelect }: { cap: LoadedCapture; p: Process; findings: Finding[]; onSelect(id: ProcId): void }) {
+  const ids = [...new Set(findings.map(f => f.persistenceId).filter((x): x is string => x !== null))];
+  const items = ids.flatMap(id => cap.model.persistence.find(i => i.id === id) ?? []);
+  if (items.length === 0) return null;
+  return (
+    <Section id="d-launch-item" title={items.length === 1 ? 'Launch item' : 'Launch items'}>
+      {items.map(item => <LaunchItem key={item.id} cap={cap} item={item} current={p.id} onSelect={onSelect} />)}
+    </Section>
   );
 }
 
@@ -302,9 +319,10 @@ export function DetailPane({ selKey, onSelectProc, noteRef }: {
   const p = cap.model.processes.get(selKey);
   if (!p) {
     const q = cap.analysis.queue.find(x => x.key === selKey && x.kind === 'persistence');
-    return q ? <PersistenceDetail cap={cap} q={q} noteRef={noteRef} /> : null;
+    return q ? <PersistenceDetail cap={cap} q={q} onSelect={onSelectProc} noteRef={noteRef} /> : null;
   }
   const img = latestImage(p);
+  const findings = cap.analysis.findings.get(p.id) ?? [];
   return (
     <>
       <header className="dhead">
@@ -315,7 +333,8 @@ export function DetailPane({ selKey, onSelectProc, noteRef }: {
           {img?.isPlatform ? ' · Apple platform binary' : ''}
         </p>
       </header>
-      <Why findings={cap.analysis.findings.get(p.id) ?? []} />
+      <Why findings={findings} item={cap.analysis.queue.find(x => x.procId === p.id)} />
+      <LaunchItems cap={cap} p={p} findings={findings} onSelect={onSelectProc} />
       <LaunchedBy cap={cap} p={p} onSelect={onSelectProc} />
       <Details p={p} />
       <DidWhat cap={cap} p={p} onSelect={onSelectProc} />

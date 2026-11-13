@@ -35,3 +35,14 @@ export function fileUrlToPath(u: string | null): string | null {
     return rest;
   }
 }
+
+/**
+ * What a btm item's URL (PersistenceItem.plistPath) points at. The field name is older than this: for a launch agent or
+ * daemon the URL is its plist, but for a login item or an app it is the app bundle (`file:///Applications/Evil.app/`),
+ * and for a user item some other path. Screens use this to label it correctly.
+ */
+export function itemPathKind(path: string | null): 'plist' | 'app' | 'other' | null {
+  if (path === null || path === '') return null;
+  if (/\.plist$/i.test(path)) return 'plist';
+  return /\.app\/*$/i.test(path) ? 'app' : 'other';
+}
