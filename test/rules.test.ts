@@ -2,9 +2,10 @@ import { describe, expect, test } from 'vitest';
 import { basename } from '../src/model/util';
 import { analyze } from '../src/rules/engine';
 import { RULES } from '../src/rules/rules';
-import type { CaptureModel, Image, Process } from '../src/model/types';
+import type { Image } from '../src/model/types';
 import type { FixtureName } from './fixtures';
 import { count, item, model, queued, rules, sev } from './helpers';
+import { apple, img, synth } from './synth';
 
 describe('es-lab must flag', () => {
   test('fake prompt high', () => expect(sev('es-lab.jsonl', x => x.p?.pid === 40753)).toBe('high'));
@@ -75,29 +76,6 @@ describe('shlayer', () => {
   });
 });
 
-function img(o: Partial<Image>): Image {
-  return {
-    token: '100:1', path: '/bin/x', signingId: 'com.example.x', teamId: null, isPlatform: false, csFlags: 0,
-    args: null, cwd: null, env: null, stdinIsPipe: null, script: null,
-    time: '2026-11-12T00:00:00.000Z', seq: 1, inherited: false, ...o,
-  };
-}
-const apple = (path: string, args: string[]): Image =>
-  img({ path, args, signingId: `com.apple.${path.split('/').pop()}`, isPlatform: true });
-
-/** A one-process capture holding the given images. */
-function synth(images: Image[]): CaptureModel {
-  const p: Process = {
-    id: '100:1', pid: 100, ghost: false, images, forkParent: null,
-    originalPpid: null, ppid: null, parentToken: null, responsibleToken: null,
-    originalParent: null, currentParent: null, responsible: null,
-    startTime: null, exitTime: null, firstSeq: 1, fileOps: [],
-  };
-  return {
-    processes: new Map([[p.id, p]]), tokenIndex: new Map([[p.id, p.id]]), persistence: [],
-    stats: { lines: 0, events: 0, badLines: 0, otherEvents: {}, versions: [], firstSeq: null, firstTime: null, lastTime: null },
-  };
-}
 const analyzed = (i: Image) => analyze(synth([i]));
 const queuedRules = (i: Image) => analyzed(i).queue[0]?.findings.map(f => f.ruleId) ?? [];
 

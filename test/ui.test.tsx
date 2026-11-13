@@ -643,7 +643,7 @@ test('persistence-only item: paths, no tree or routine, verdict keyed by its que
   expect(detail.getByText('/Users/alice/Library/LaunchAgents/com.google.GoogleUpdater.wake.plist')).toBeInTheDocument();
   expect(detail.getByText('Runs').nextElementSibling).toHaveTextContent(/GoogleUpdater\/Current\/GoogleUpdater\.app\/Contents\/MacOS\/GoogleUpdater$/);
   expect(detail.getByText('App').nextElementSibling).toHaveTextContent(/157\.0\.8089\.2\/GoogleUpdater\.app/);
-  expect(detail.getByText(/Something registered itself to run automatically/)).toBeInTheDocument();
+  expect(detail.getByText(/Registered a launch agent: launchd starts the program/)).toBeInTheDocument();
   expect(detail.queryByRole('button', { name: /show in tree/i })).not.toBeInTheDocument();
   expect(detail.queryByRole('button', { name: /routine/i })).not.toBeInTheDocument();
   await user.keyboard('c');

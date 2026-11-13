@@ -4,11 +4,12 @@ import { ancestry, childrenIndex, displayName } from '../model/relations';
 import type { ProcId, Process } from '../model/types';
 import { basename, latestImage } from '../model/util';
 import type { Finding, QueueItem } from '../rules/engine';
+import { MITRE_NAMES } from '../rules/mitre';
 import type { Severity } from '../rules/rules';
 import { programKey } from '../session/routine';
 import type { Status } from '../session/store';
 import { useSession } from './session-context';
-import { fmtArgs, fmtTime, MITRE_NAMES, NO_IDENTITY, toggleStatus } from './triage-model';
+import { fmtArgs, fmtTime, NO_IDENTITY, toggleStatus } from './triage-model';
 
 const SHOW_FIRST = 40;
 const yesNo = (b: boolean): string => (b ? 'yes' : 'no');

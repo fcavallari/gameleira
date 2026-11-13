@@ -1,7 +1,7 @@
 import { ancestry } from '../model/relations';
 import type { CaptureModel, ProcId } from '../model/types';
 import { basename } from '../model/util';
-import { RULES, SEVERITY_RANK as RANK, type Rule, type Severity } from './rules';
+import { RULES, SEVERITY_RANK as RANK, type MatchResult, type Rule, type Severity } from './rules';
 
 export interface Finding { ruleId: string; severity: Severity; title: string; explanation: string;
   mitre: string[]; evidence: string; imgIndex: number | null; persistenceId: string | null }
@@ -38,11 +38,11 @@ function timeMs(t: string | null): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
-function finding(rule: Rule, res: { evidence: string; severity?: Severity },
-  imgIndex: number | null, persistenceId: string | null): Finding {
+function finding(rule: Rule, res: MatchResult, imgIndex: number | null, persistenceId: string | null): Finding {
   return {
-    ruleId: rule.id, severity: res.severity ?? rule.severity, title: rule.title,
-    explanation: rule.explanation, mitre: rule.mitre, evidence: res.evidence, imgIndex, persistenceId,
+    ruleId: rule.id, severity: res.severity ?? rule.severity, title: res.title ?? rule.title,
+    explanation: res.explanation ?? rule.explanation, mitre: res.mitre ?? rule.mitre, evidence: res.evidence,
+    imgIndex, persistenceId,
   };
 }
 
@@ -61,7 +61,7 @@ export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
     p.images.forEach((img, imgIndex) => {
       if (img.inherited || img.path === null) return;
       for (const rule of imageRules) {
-        const res = rule.match({ m, p, img, imgIndex });
+        const res = rule.match?.({ m, p, img, imgIndex });
         if (res) add(p.id, { f: finding(rule, res, imgIndex, null), seq: img.seq, time: img.time });
       }
     });

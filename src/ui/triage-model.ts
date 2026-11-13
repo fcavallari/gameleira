@@ -66,26 +66,6 @@ export function haystack(cap: LoadedCapture, q: QueueItem): string {
   return parts.filter(Boolean).join('\n').toLowerCase();
 }
 
-/** Technique names for the MITRE IDs the rules cite, so the learner sees a word next to the number. */
-export const MITRE_NAMES: Record<string, string> = {
-  'T1033': 'System Owner/User Discovery',
-  'T1056': 'Input Capture',
-  'T1056.002': 'GUI Input Capture',
-  'T1059.004': 'Unix Shell',
-  'T1082': 'System Information Discovery',
-  'T1105': 'Ingress Tool Transfer',
-  'T1110': 'Brute Force',
-  'T1140': 'Deobfuscate/Decode Files or Information',
-  'T1204.002': 'Malicious File',
-  'T1543.001': 'Launch Agent',
-  'T1543.004': 'Launch Daemon',
-  'T1553.001': 'Gatekeeper Bypass',
-  'T1553.002': 'Code Signing',
-  'T1560.001': 'Archive via Utility',
-  'T1564': 'Hide Artifacts',
-  'T1569.001': 'Launchctl',
-};
-
 /** `2026-11-12T16:43:52.123456789Z` → `2026-11-12 16:43:52.123Z`. */
 export const fmtTime = (t: string | null): string =>
   t ? t.replace('T', ' ').replace(/(\.\d{3})\d*Z$/, '$1Z') : 'n/a';

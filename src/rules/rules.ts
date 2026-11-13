@@ -4,11 +4,15 @@ import { basename, latestImage, normPath } from '../model/util';
 export type Severity = 'high' | 'med' | 'low';
 export const SEVERITY_RANK: Record<Severity, number> = { high: 3, med: 2, low: 1 };
 export interface RuleCtx { m: CaptureModel; p: Process; img: Image; imgIndex: number }
+/** What a match reports. `mitre`, `title` and `explanation` override the rule's own for this finding. */
+export interface MatchResult { evidence: string; severity?: Severity; mitre?: string[]; title?: string; explanation?: string }
 export interface Rule {
-  id: string; title: string; severity: Severity; explanation: string; mitre: string[];
+  id: string; title: string; severity: Severity; explanation: string;
+  /** Every MITRE ID the rule can cite; a finding cites the subset its trigger fits. */
+  mitre: string[];
   scope: 'image' | 'persistence';
-  match(ctx: RuleCtx): { evidence: string; severity?: Severity } | null;               // scope 'image'
-  matchItem?(item: PersistenceItem, m: CaptureModel): { evidence: string; severity?: Severity } | null; // scope 'persistence'
+  match?(ctx: RuleCtx): MatchResult | null;                                  // scope 'image'
+  matchItem?(item: PersistenceItem, m: CaptureModel): MatchResult | null;  // scope 'persistence'
 }
 
 export const SHELLS: Set<string> = new Set([
@@ -65,7 +69,33 @@ function outputTargets(a: string[], letter: string): (string | undefined)[] {
   return out;
 }
 
-const LAUNCH_DIR = /^(?:\/Users\/[^/]+\/Library\/LaunchAgents|\/Library\/Launch(?:Agents|Daemons))\//;
+const LAUNCH_DIR = /^(?:\/Users\/[^/]+\/Library\/LaunchAgents|\/Library\/Launch(?:Agents|Daemons))\//i;
+const DAEMON_DIR = /^\/Library\/LaunchDaemons\//i;
+
+type LaunchKind = 'agent' | 'daemon' | 'login' | 'app' | 'user' | null;
+/** The kind of launch item, from the btm item type (0 user item, 1 app, 2 login item, 3 agent, 4 daemon) or its plist directory. */
+function launchKind(itemType: number | null, plistPath: string | null): LaunchKind {
+  const byType: LaunchKind[] = ['user', 'app', 'login', 'agent', 'daemon'];
+  if (itemType !== null && byType[itemType] !== undefined) return byType[itemType]!;
+  if (plistPath === null) return null;
+  const n = normPath(plistPath);
+  return DAEMON_DIR.test(n) ? 'daemon' : LAUNCH_DIR.test(n) ? 'agent' : null;
+}
+const LAUNCH_MITRE: Record<NonNullable<LaunchKind>, string> = {
+  agent: 'T1543.001', daemon: 'T1543.004', login: 'T1547.015', app: 'T1547.015', user: 'T1547.015',
+};
+const launchMitre = (k: LaunchKind): string[] => (k === null ? ['T1543.001', 'T1543.004'] : [LAUNCH_MITRE[k]]);
+const LAUNCH_TITLE: Record<NonNullable<LaunchKind>, string> = {
+  agent: 'Launch agent registered', daemon: 'Launch daemon registered', login: 'Login item registered',
+  app: 'App registered to open at login', user: 'Login item registered (user item)',
+};
+const LAUNCH_EXPLANATION: Record<NonNullable<LaunchKind>, string> = {
+  agent: 'Registered a launch agent: launchd starts the program it names each time this user logs in.',
+  daemon: 'Registered a launch daemon: launchd starts the program it names at boot, usually as root, before anyone logs in.',
+  login: 'Registered a login item: macOS opens it each time this user logs in.',
+  app: 'Registered an app to open each time this user logs in.',
+  user: 'Added a login item to the user\'s list: macOS opens it each time this user logs in.',
+};
 const TERMINALS_EDITORS =
   /\/(?:Terminal|iTerm2?|Visual Studio Code|Code|Cursor|Xcode|Claude|Warp|Ghostty|Alacritty|kitty|WezTerm)\.app\//;
 
@@ -102,7 +132,6 @@ function trimSlash(p: string): string {
 }
 
 const PERSISTENCE_EXPLANATION = 'Something registered itself to run automatically at login or boot.';
-const UNSIGNED_EXPLANATION = 'Not signed by an identified developer.';
 
 export const RULES: Rule[] = [
   {
@@ -116,16 +145,15 @@ export const RULES: Rule[] = [
   },
   {
     id: 'dscl-authonly', title: 'Password check with dscl', severity: 'high',
-    explanation: 'Checks whether a password is correct. Stealers use it to verify a password they just phished.',
-    mitre: ['T1110', 'T1056'], scope: 'image',
+    explanation: 'Checks whether a password is correct for a local account. Stealers run it to verify a password the attacker just phished with a fake prompt.',
+    mitre: ['T1056.002'], scope: 'image',
     match: ({ img }) =>
       basename(img.path) === 'dscl' && rest(img).includes('-authonly') ? { evidence: cmdline(img) } : null,
   },
   {
     id: 'persistence-item', title: 'Launch item registered', severity: 'high',
     explanation: PERSISTENCE_EXPLANATION,
-    mitre: ['T1543.001', 'T1543.004'], scope: 'persistence',
-    match: () => null,
+    mitre: ['T1543.001', 'T1543.004', 'T1547.015'], scope: 'persistence',
     matchItem: (item, m) => {
       if (item.kind !== 'add') return null;
       const exe = item.executablePath;
@@ -146,7 +174,11 @@ export const RULES: Rule[] = [
           }
         }
       }
-      return { evidence, severity: high ? 'high' : 'med' };
+      const kind = launchKind(item.itemType, item.plistPath);
+      return {
+        evidence, severity: high ? 'high' : 'med', mitre: launchMitre(kind),
+        ...(kind !== null ? { title: LAUNCH_TITLE[kind], explanation: LAUNCH_EXPLANATION[kind] } : {}),
+      };
     },
   },
   {
@@ -166,7 +198,15 @@ export const RULES: Rule[] = [
         const n = normPath(target);
         if (LAUNCH_DIR.test(n) && !folded.has(n)) hits.add(target);
       }
-      return hits.size > 0 ? { evidence: `wrote ${[...hits].join(', ')}` } : null;
+      if (hits.size === 0) return null;
+      const kinds = new Set([...hits].map(h => launchKind(null, h)));
+      const only = kinds.size === 1 ? [...kinds][0]! : null;
+      return {
+        evidence: `wrote ${[...hits].join(', ')}`,
+        mitre: [...new Set([...kinds].flatMap(launchMitre))].sort(),
+        ...(only === 'agent' ? { title: 'Launch agent plist written', explanation: LAUNCH_EXPLANATION.agent }
+          : only === 'daemon' ? { title: 'Launch daemon plist written', explanation: LAUNCH_EXPLANATION.daemon } : {}),
+      };
     },
   },
   {
@@ -287,22 +327,22 @@ export const RULES: Rule[] = [
   },
   {
     id: 'unsigned', title: 'Unsigned binary', severity: 'med',
-    explanation: UNSIGNED_EXPLANATION,
-    mitre: ['T1553.002'], scope: 'image',
+    explanation: 'Not signed at all. Unsigned binaries are a common trait of malware; not a technique by itself.',
+    mitre: ['T1036'], scope: 'image',
     match: ({ img }) => isUnsigned(img) ? { evidence: `${img.path} has no code signature` } : null,
   },
   {
     id: 'adhoc', title: 'Ad-hoc signed binary', severity: 'low',
-    explanation: UNSIGNED_EXPLANATION,
-    mitre: ['T1553.002'], scope: 'image',
+    explanation: 'Ad-hoc signed: it carries a signature but no developer identity. Common for Homebrew and locally built tools, and for malware; a trait, not a technique by itself.',
+    mitre: ['T1036'], scope: 'image',
     match: ({ img }) =>
       !img.isPlatform && img.signingId !== null && isAdhoc(img)
         ? { evidence: `${img.path} is ad-hoc signed (${img.signingId}), with no developer identity` } : null,
   },
   {
     id: 'orphaned', title: 'Detached from its parent', severity: 'low',
-    explanation: 'Detached from the process that started it, so it keeps running after its parent exits.',
-    mitre: ['T1564'], scope: 'image',
+    explanation: 'Detached from the process that started it, so it keeps running after its parent exits and no longer shows up under it. Malware double-forks like this to break the link to whatever launched it.',
+    mitre: ['T1036.009'], scope: 'image',
     match: ({ m, p, imgIndex }) => {
       if (imgIndex !== lastRuleImage(p)) return null;
       if (p.ppid !== 1 || p.originalPpid === null || p.originalPpid === 1) return null;
