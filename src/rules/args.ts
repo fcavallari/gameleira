@@ -83,13 +83,14 @@ export interface PipeLang {
   probes: string[];        // arguments that only print a version or help and exit (only before the program starts)
   probeLetters: string;    // the same, as letters inside a short cluster (`python3 -uV`, `perl -wv`)
   probesYield: string[];   // probes that still run a script named after them: `ruby -v -` prints the version, then reads stdin
+  probeLettersYield: string; // the same, as cluster letters: `ruby -wv -` also reads stdin
   longs: string[];         // long options known to take no value; any other long option means "can't tell"
   longValues: string[];    // long options taking the next argument as a value
 }
 /** For shells only the long forms are probes: `bash -h` is `set -h` and `zsh -V` / `dash -V` set options, and both still run piped commands. */
 const SHELL_PROBES = ['--version', '--help'];
 const SHELL_LONGS = ['--login', '--norc', '--noprofile', '--posix', '--noediting', '--restricted', '--verbose', '--no-rcs', '--no-globalrcs', '--interactive'];
-const SHELL = { mitre: 'T1059.004', inline: 'c', stdinFlag: 's', attached: '', probes: SHELL_PROBES, probeLetters: '', probesYield: [],
+const SHELL = { mitre: 'T1059.004', inline: 'c', stdinFlag: 's', attached: '', probes: SHELL_PROBES, probeLetters: '', probesYield: [], probeLettersYield: '',
   longs: SHELL_LONGS, longValues: ['--rcfile', '--init-file'] };
 export const PIPE_LANGS: [RegExp, PipeLang][] = [
   // -c: the command is an argument; -s: read commands from stdin (the rest are positional parameters); -o/+o take an
@@ -98,15 +99,16 @@ export const PIPE_LANGS: [RegExp, PipeLang][] = [
   [/^(?:zsh|dash|ksh|csh|tcsh)$/, { ...SHELL, valueOpts: ['-o', '+o'] }],
   // -c code, -m module; -W and -X take a value; -V, -VV, -h print and exit.
   [/^python[0-9.]*$/, { mitre: 'T1059.006', inline: 'cm', stdinFlag: '', valueOpts: ['-W', '-X'], attached: 'WX',
-    probes: ['--version', '--help', '-V', '-VV', '-h'], probeLetters: 'Vh', probesYield: [], longs: [], longValues: [] }],
+    probes: ['--version', '--help', '-V', '-VV', '-h'], probeLetters: 'Vh', probesYield: [], probeLettersYield: '', longs: [], longValues: [] }],
   // -e/-E code (also in clusters such as -ne, -0777pe); -I, -M, -m, -x, -d, -i (in-place extension) carry their
   // value attached; -v, -V, -h print and exit (even with a `-` after them).
   [/^perl[0-9.]*$/, { mitre: 'T1059', inline: 'eE', stdinFlag: '', valueOpts: [], attached: 'IMmxdi',
-    probes: ['--version', '--help', '-V', '-h', '-v'], probeLetters: 'Vvh', probesYield: [], longs: [], longValues: [] }],
-  // -e code; -I, -r, -C, -E take a value; -h prints help; -v prints the version and exits, unless `-` follows a bare
-  // `-v` (`ruby -v -` then reads stdin; `ruby -wv -` does not). -V is not a ruby option: ruby rejects it and exits.
+    probes: ['--version', '--help', '-V', '-h', '-v'], probeLetters: 'Vvh', probesYield: [], probeLettersYield: '', longs: [], longValues: [] }],
+  // -e code; -I, -r, -C, -E take a value; -h prints help and exits. -v (alone or in a cluster such as -wv) prints the
+  // version and exits when no script is named, but a `-` after it still reads the piped script (`ruby -wv -`).
+  // -V is not a ruby option: ruby rejects it and exits.
   [/^ruby[0-9.]*$/, { mitre: 'T1059', inline: 'e', stdinFlag: '', valueOpts: ['-I', '-r', '-C', '-E'], attached: 'IrCE',
-    probes: ['--version', '--help', '-h', '-v', '-V', '-VV'], probeLetters: 'hvV', probesYield: ['-v'], longs: [], longValues: [] }],
+    probes: ['--version', '--help', '-h', '-v', '-V', '-VV'], probeLetters: 'hvV', probesYield: ['-v'], probeLettersYield: 'v', longs: [], longValues: [] }],
 ];
 
 /**
@@ -136,8 +138,14 @@ export function readsStdin(lang: PipeLang, a: string[]): boolean {
       if (lang.attached.includes(x[1]!)) continue;
       const letters = x.slice(1);
       if ([...letters].some(ch => lang.inline.includes(ch))) return false;
-      // A probe letter in a cluster (`-uV`) counts when nothing in the cluster takes a value.
-      if ([...letters].some(ch => lang.probeLetters.includes(ch)) && ![...letters].some(ch => valueLetters.includes(ch))) return false;
+      // A probe letter in a cluster (`-uV`) counts when nothing in the cluster takes a value. If every probe letter in
+      // it yields (ruby's v), it waits like `-v`: a later `-` still reads stdin.
+      const probeHits = [...letters].filter(ch => lang.probeLetters.includes(ch));
+      if (probeHits.length > 0 && ![...letters].some(ch => valueLetters.includes(ch))) {
+        if (!probeHits.every(ch => lang.probeLettersYield.includes(ch))) return false;
+        probe = true;
+        continue;
+      }
       if (lang.stdinFlag !== '' && letters.includes(lang.stdinFlag)) return true;
       continue;
     }

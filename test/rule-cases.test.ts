@@ -742,6 +742,8 @@ describe('fix round 2', () => {
       expect(r.explanation).toMatch(/--version/);
       expect(r.explanation).toMatch(/for python also -V, -VV, -h/);
       expect(r.explanation).toMatch(/-V, which ruby rejects as invalid and exits/);
+      expect(r.explanation).toMatch(/ruby -v probe followed by - still reads the piped script/);
+      expect(r.explanation).not.toMatch(/bare -v/);
     });
   });
 
@@ -967,12 +969,20 @@ describe('fix round 4', () => {
     expect(f.explanation).toMatch(/Chromium-based browsers and Electron apps/);
   });
 
-  test('ruby probe letters in clusters; only a bare -v followed by - reads stdin', () => {
+  test('ruby -v, alone or in a cluster, is a probe unless - follows, which reads the piped script', () => {
     expect(fires('/usr/bin/ruby', ['ruby', '-wv'])).toBe(false);
     expect(fires('/usr/bin/ruby', ['ruby', '-vw'])).toBe(false);
-    expect(fires('/usr/bin/ruby', ['ruby', '-wv', '-'])).toBe(false);
+    expect(fires('/usr/bin/ruby', ['ruby', '-v'])).toBe(false);
+    expect(fires('/usr/bin/ruby', ['ruby', '-wv', '-'])).toBe(true);
+    expect(fires('/usr/bin/ruby', ['ruby', '-vw', '-'])).toBe(true);
+    expect(fires('/usr/bin/ruby', ['ruby', '-vv', '-'])).toBe(true);
     expect(fires('/usr/bin/ruby', ['ruby', '-v', '-'])).toBe(true);
     expect(fires('/usr/bin/ruby', ['ruby', '-w'])).toBe(true);
+  });
+  test('ruby -h and -V, alone or in a cluster, stay hard probes', () => {
+    expect(fires('/usr/bin/ruby', ['ruby', '-h', '-'])).toBe(false);
+    expect(fires('/usr/bin/ruby', ['ruby', '-wh', '-'])).toBe(false);
+    expect(fires('/usr/bin/ruby', ['ruby', '-vV', '-'])).toBe(false);
   });
 
   test('perl -i<ext> carries its value attached', () => {

@@ -603,7 +603,7 @@ export const RULES: Rule[] = [
   },
   {
     id: 'shell-from-pipe', title: 'Shell or interpreter reading commands from a pipe', severity: 'med',
-    explanation: "A shell, or python, perl or ruby, ran commands piped into it (the `curl … | bash` pattern), so there's no script file on disk to inspect. Version and help probes before the script starts do not count: --version and --help; for python also -V, -VV, -h; for perl -v, -V, -h; for ruby -h, -v (unless a bare -v is followed by -) and -V, which ruby rejects as invalid and exits.",
+    explanation: "A shell, or python, perl or ruby, ran commands piped into it (the `curl … | bash` pattern), so there's no script file on disk to inspect. Version and help probes before the script starts do not count: --version and --help; for python also -V, -VV, -h; for perl -v, -V, -h; for ruby -h, -v (also in a cluster such as -wv) and -V, which ruby rejects as invalid and exits. A ruby -v probe followed by - still reads the piped script.",
     mitre: ['T1059.004', 'T1059.006', 'T1059'], scope: 'image',
     match: ({ p, img, imgIndex }) => {
       const lang = pipeLang(img);
