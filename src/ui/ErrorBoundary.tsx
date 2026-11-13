@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { Frame } from './Brand';
 
 /**
  * Last line of defence: a screen that throws would otherwise leave a blank page. This only shows a message. It never
@@ -18,12 +19,12 @@ export class ErrorBoundary extends Component<{ children: ReactNode; onReload?: (
     if (!this.state.failed) return this.props.children;
     const reload = this.props.onReload ?? (() => { window.location.reload(); });
     return (
-      <main className="shell">
+      <Frame>
         <div role="alert" className="banner">
           <span className="grow">Something went wrong — reload. Your saved sessions are kept in this browser. A change you made in the last few seconds may not have been saved.</span>
           <button onClick={reload}>Reload</button>
         </div>
-      </main>
+      </Frame>
     );
   }
 }

@@ -19,7 +19,7 @@ export function ImportSession() {
 
   return (
     <div>
-      <label>Import session <input type="file" accept="application/json,.json"
+      <label className="filebtn" data-own-drop>Import session <input type="file" accept="application/json,.json"
         onChange={e => { void onFile(e.target.files?.[0]); e.target.value = ''; }} /></label>
       {done && (
         <p role="status">Imported as “{done.name}”. <button onClick={() => { void c.openSession(done.id); }}>Open</button></p>
@@ -62,47 +62,52 @@ export function ConfirmedTab() {
   };
 
   return (
-    <div>
-      <div className="row">
-        <button className="primary" onClick={() => { void doExport(); }}>Export session</button>
-        <label className="inline"><input type="checkbox" checked={includeEnv} onChange={e => { c.setExportOpts({ includeEnv: e.target.checked }); }} /> Include environment variables</label>
-        <label className="inline"><input type="checkbox" checked={redactArgs} onChange={e => { c.setExportOpts({ redactArgs: e.target.checked }); }} /> Redact command-line arguments</label>
-      </div>
-      <p className="muted small">
-        The export includes the full command line of every verdict, and those can contain secrets such as passwords
-        (for example <code>dscl . -authonly user password</code>). Tick “Redact command-line arguments” to replace every argument
-        after the program name with [redacted]. Process details are exported for captures that are loaded now.
-        Environment variables can hold secrets too; leave them out unless needed.
-      </p>
-      {leftOut > 0 && (
-        <p className="warn small">
-          Details for {leftOut} confirmed {leftOut === 1 ? 'process is' : 'processes are'} left out because {leftOut === 1 ? 'its capture isn’t' : 'their captures aren’t'} loaded; re-add {leftOut === 1 ? 'it' : 'them'} to include.
+    <div className="confirmed-tab">
+      <section aria-labelledby="confirmed-h">
+        <h2 id="confirmed-h">Confirmed in this session <span className="muted num">{confirmed.length}</span></h2>
+        {confirmed.length === 0 ? (
+          <p className="empty">Nothing confirmed yet in this session. Press <kbd>c</kbd> on a row in Triage to confirm it.</p>
+        ) : (
+          <ul className="list" aria-label="Confirmed processes">
+            {confirmed.map(v => (
+              <li key={`${v.fingerprint}|${v.procKey}`} className="confirmed">
+                <div className="row">
+                  {v.snapshot.severity && <span className={`badge sev-${v.snapshot.severity}`}>{v.snapshot.severity}</span>}
+                  <strong>{v.snapshot.name}</strong>
+                  <span className="chip">{fileName(v.fingerprint)}</span>
+                </div>
+                {v.snapshot.path && <code className="small">{[v.snapshot.path, ...(v.snapshot.args?.slice(1) ?? [])].join(' ')}</code>}
+                {v.snapshot.ruleIds.length > 0 && <div className="muted small">rules: {v.snapshot.ruleIds.join(', ')}</div>}
+                {v.note && <p className="note">{v.note}</p>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <aside className="export" aria-labelledby="export-h">
+        <h2 id="export-h">Export</h2>
+        <div className="checks">
+          <label className="inline"><input type="checkbox" checked={redactArgs} onChange={e => { c.setExportOpts({ redactArgs: e.target.checked }); }} /> Redact command-line arguments</label>
+          <label className="inline"><input type="checkbox" checked={includeEnv} onChange={e => { c.setExportOpts({ includeEnv: e.target.checked }); }} /> Include environment variables</label>
+        </div>
+        <div><button className="primary" onClick={() => { void doExport(); }}>Export session</button></div>
+        <p className="muted small">
+          The export includes the full command line of every verdict, and those can contain secrets such as passwords
+          (for example <code>dscl . -authonly user password</code>). Tick “Redact command-line arguments” to replace every argument
+          after the program name with [redacted]. Process details are exported for captures that are loaded now.
+          Environment variables can hold secrets too; leave them out unless needed.
         </p>
-      )}
-      {hasLaunchItems && <p className="muted small">Launch items are exported from their snapshot.</p>}
-      {error && <p role="alert" className="error">{error}</p>}
-
-      {confirmed.length === 0 ? (
-        <p className="muted">Nothing confirmed yet in this session.</p>
-      ) : (
-        <ul className="list" aria-label="Confirmed processes">
-          {confirmed.map(v => (
-            <li key={`${v.fingerprint}|${v.procKey}`} className="confirmed">
-              <div className="row">
-                <strong>{v.snapshot.name}</strong>
-                {v.snapshot.severity && <span className={`badge sev-${v.snapshot.severity}`}>{v.snapshot.severity}</span>}
-                <span className="chip">{fileName(v.fingerprint)}</span>
-              </div>
-              {v.snapshot.path && <code className="small">{[v.snapshot.path, ...(v.snapshot.args?.slice(1) ?? [])].join(' ')}</code>}
-              {v.snapshot.ruleIds.length > 0 && <div className="muted small">rules: {v.snapshot.ruleIds.join(', ')}</div>}
-              {v.note && <p className="note">{v.note}</p>}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <h3>Import</h3>
-      <ImportSession />
+        {leftOut > 0 && (
+          <p className="warn small">
+            Details for {leftOut} confirmed {leftOut === 1 ? 'process is' : 'processes are'} left out because {leftOut === 1 ? 'its capture isn’t' : 'their captures aren’t'} loaded; re-add {leftOut === 1 ? 'it' : 'them'} to include.
+          </p>
+        )}
+        {hasLaunchItems && <p className="muted small">Launch items are exported from their snapshot.</p>}
+        {error && <p role="alert" className="error">{error}</p>}
+        <h2 className="import-h">Import</h2>
+        <ImportSession />
+      </aside>
     </div>
   );
 }

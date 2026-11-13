@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { LoadedCapture } from '../ingest/load';
-import { ancestry, childrenIndex, displayName } from '../model/relations';
+import { ancestry, childrenIndex, displayName, type ParentMode } from '../model/relations';
 import type { ProcId, Process } from '../model/types';
 import { basename, latestImage } from '../model/util';
 import type { Finding, QueueItem } from '../rules/engine';
@@ -10,7 +10,7 @@ import { NO_IDENTITY, programKey } from '../session/routine';
 import type { Status } from '../session/store';
 import { LaunchItem } from './LaunchItem';
 import { useSession } from './session-context';
-import { fmtArgs, fmtTime } from './triage-model';
+import { fmtArgs, fmtTime, verdictKey } from './triage-model';
 
 const SHOW_FIRST = 40;
 const yesNo = (b: boolean): string => (b ? 'yes' : 'no');
@@ -74,19 +74,46 @@ function Step({ cap, id, onSelect }: { cap: LoadedCapture; id: ProcId; onSelect(
   );
 }
 
+const ROOTS: { mode: ParentMode; name: string; label: string }[] = [
+  { mode: 'original', name: 'Original parent', label: 'Launch chain, oldest first' },
+  { mode: 'current', name: 'Current parent', label: 'Current-parent chain, oldest first' },
+  { mode: 'responsible', name: 'Responsible', label: 'Responsible chain, oldest first' },
+];
+const same = (a: ProcId[], b: ProcId[]): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/**
+ * Every root of a process, the way a gameleira grows: each way of tracing where it came from hangs as its own column,
+ * oldest first, and they all come down into one trunk, the process itself. A root that agrees with the original parent
+ * is not drawn twice; the line under the trunk says so.
+ */
 function LaunchedBy({ cap, p, onSelect }: { cap: LoadedCapture; p: Process; onSelect(id: ProcId): void }) {
-  const chain = useMemo(() => ancestry(cap.model, p.id, 'original').reverse(), [cap, p.id]);
-  const responsible = p.responsible !== null && p.responsible !== p.id && !chain.includes(p.responsible) ? p.responsible : null;
+  const chains = useMemo(() => ROOTS.map(r => ({ ...r, chain: ancestry(cap.model, p.id, r.mode).reverse() })), [cap, p.id]);
+  const original = chains[0]!.chain;
+  const shown = chains.filter((r, i) => i === 0 || (r.chain.length > 0 && !same(r.chain, original)));
+  const agree = chains.filter((r, i) => i > 0 && r.chain.length > 0 && same(r.chain, original)).map(r => r.name.toLowerCase());
+  const selfResponsible = p.responsible === p.id;
+  const unknown = chains.filter((r, i) => i > 0 && r.chain.length === 0 && !(r.mode === 'responsible' && selfResponsible))
+    .map(r => r.name.toLowerCase());
   return (
     <Section id="d-launch" title="Launched by">
-      <ol className="chain" aria-label="Launch chain, oldest first">
-        {chain.map(id => <Step key={id} cap={cap} id={id} onSelect={onSelect} />)}
-        <li className="self"><strong>{displayName(cap.model, p.id)}</strong>{!p.ghost && <span className="muted small"> pid {p.pid}</span>}</li>
-      </ol>
-      {chain.length === 0 && <p className="muted small">No parent is known for this process.</p>}
-      {responsible !== null && (
-        <p className="small"><span className="muted">Responsible process (the app that caused it): </span>
-          <button className="link" onClick={() => { onSelect(responsible); }}>{displayName(cap.model, responsible)}</button></p>
+      <div className="roots">
+        {shown.map(r => (
+          <div key={r.mode} className={`root ${r.mode}`}>
+            <span className="root-name">{r.name}</span>
+            <ol className="chain" aria-label={r.label}>
+              {r.chain.map(id => <Step key={id} cap={cap} id={id} onSelect={onSelect} />)}
+              {r.chain.length === 0 && <li className="same">No parent is known for this process.</li>}
+            </ol>
+          </div>
+        ))}
+      </div>
+      <div className="trunk"><span className="self">{displayName(cap.model, p.id)}</span>{!p.ghost && <span className="muted small">pid {p.pid}</span>}</div>
+      {(agree.length > 0 || unknown.length > 0 || selfResponsible) && (
+        <p className="muted small roots-agree">
+          {agree.length > 0 && `The ${agree.join(' and ')} ${agree.length === 1 ? 'is' : 'are'} the same chain. `}
+          {selfResponsible && 'It is its own responsible process. '}
+          {unknown.length > 0 && `No ${unknown.join(' or ')} recorded.`}
+        </p>
       )}
     </Section>
   );
@@ -253,10 +280,10 @@ function Actions({ vkey, p, noteRef }: { vkey: string; p: Process | null; noteRe
   const keptWhy = pkey !== null && c.routineKeys.has(pkey) ? c.triage?.kept.get(`p:${vkey}`) : undefined;
   return (
     <Section id="d-actions" title="Actions">
-      <p className="small"><span className="muted">Status: </span><strong>{STATUS_TEXT[status]}</strong></p>
+      <p className="small status-line"><span className="muted">Status: </span><strong className={`st-${status}`}>{STATUS_TEXT[status]}</strong></p>
       <div className="row">
-        <button className="primary" aria-pressed={status === 'confirmed'} onClick={() => { void c.toggleVerdict(vkey, 'confirmed'); }}>✔ Confirm suspicious <kbd>c</kbd></button>
-        <button aria-pressed={status === 'benign'} onClick={() => { void c.toggleVerdict(vkey, 'benign'); }}>✕ Benign <kbd>b</kbd></button>
+        <button className="primary" aria-pressed={status === 'confirmed'} onClick={() => { void c.toggleVerdict(vkey, 'confirmed'); }}>Confirm suspicious <kbd>c</kbd></button>
+        <button aria-pressed={status === 'benign'} onClick={() => { void c.toggleVerdict(vkey, 'benign'); }}>Benign <kbd>b</kbd></button>
         {p && (pkey !== null && c.routineKeys.has(pkey)
           ? <button onClick={() => { void c.removeRoutine(pkey); }}>Stop treating as routine</button>
           : <button disabled={noIdentity} title={noIdentity ? 'No signing ID, team ID or path: it cannot be told apart from other programs' : undefined}
@@ -302,20 +329,37 @@ function LaunchItems({ cap, p, findings, onSelect }: { cap: LoadedCapture; p: Pr
   );
 }
 
+const KEYS: [string, string][] = [['j', 'next row'], ['k', 'previous row'], ['c', 'confirm suspicious'], ['b', 'mark benign'], ['n', 'write a note'], ['t', 'show in the tree']];
+
+/** Before anything is selected: what is left to review, by severity, and the keys that work through it. */
+function NothingSelected() {
+  const { triage, verdicts } = useSession();
+  const queue = triage?.queue ?? [];
+  const open = queue.filter(q => (verdicts.get(verdictKey(q))?.status ?? 'unreviewed') === 'unreviewed');
+  const by = (s: Severity) => open.filter(q => q.severity === s).length;
+  return (
+    <div className="detail-empty">
+      <p className="lead-figure"><span className="num">{open.length}</span> of {queue.length} flagged {queue.length === 1 ? 'row is' : 'rows are'} unreviewed</p>
+      {open.length > 0 && (
+        <p className="sev-split">
+          {(['high', 'med', 'low'] as const).map(s => <span key={s}><span className={`badge sev-${s}`}>{s}</span> <span className="num">{by(s)}</span></span>)}
+        </p>
+      )}
+      <p className="muted">Select a flagged process on the left to see why it was flagged. Rows run high first, then by time.</p>
+      <dl className="keys">
+        {KEYS.map(([k, what]) => <div key={k}><dt><kbd>{k}</kbd></dt><dd>{what}</dd></div>)}
+      </dl>
+    </div>
+  );
+}
+
 /** The right-hand pane. `selKey` is the selected process id, or the queue key of a persistence-only item. */
 export function DetailPane({ selKey, onSelectProc, noteRef }: {
   selKey: string | null; onSelectProc(id: ProcId): void; noteRef: RefObject<HTMLTextAreaElement | null>;
 }) {
   const { capture: cap } = useSession();
   if (!cap) return null;
-  if (selKey === null) {
-    return (
-      <p className="muted detail-empty">
-        Select a flagged process on the left to see why it was flagged.
-        Keys: <kbd>j</kbd>/<kbd>k</kbd> move, <kbd>c</kbd> confirm, <kbd>b</kbd> benign, <kbd>n</kbd> note, <kbd>t</kbd> show in tree.
-      </p>
-    );
-  }
+  if (selKey === null) return <NothingSelected />;
   const p = cap.model.processes.get(selKey);
   if (!p) {
     const q = cap.analysis.queue.find(x => x.key === selKey && x.kind === 'persistence');

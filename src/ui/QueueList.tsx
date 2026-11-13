@@ -15,7 +15,7 @@ export interface QueueRow {
 }
 
 const ROW_H = 32;
-export const STATUS_ICON: Record<Status, string> = { unreviewed: '○', confirmed: '✔', benign: '✕' };
+export const STATUS_ICON: Record<Status, string> = { unreviewed: '○', confirmed: '●', benign: '–' };
 
 function Row({ row, selected, onSelect, style }: {
   row: QueueRow; selected: boolean; onSelect(item: QueueItem): void; style?: React.CSSProperties;

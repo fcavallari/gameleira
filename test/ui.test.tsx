@@ -750,6 +750,49 @@ test('launched-by chain ends in ghost label', async () => {
   expect(screen.getByText('pid 6120 · started before capture')).toBeInTheDocument();
 }, 60_000);
 
+const pickRow = async (text: string): Promise<void> => {
+  const row = (await screen.findAllByRole('option')).find(r => r.querySelector('.qname')?.textContent === text)!;
+  await user.click(row);
+};
+const rootList = (name: RegExp) => screen.queryByRole('list', { name });
+
+test('roots: a root that agrees with the original parent is named once, not drawn twice', async () => {
+  renderTriage(await loadLab());
+  await pickRow('osascript');
+  expect(rootList(/^launch chain/i)).toBeInTheDocument();
+  expect(rootList(/^responsible chain/i)).toBeInTheDocument();
+  expect(rootList(/^current-parent chain/i)).not.toBeInTheDocument();
+  expect(screen.getByText(/The current parent is the same chain\./)).toBeInTheDocument();
+}, 60_000);
+
+test('roots: an orphan shows all three, its current parent ending at launchd', async () => {
+  renderTriage(await loadLab());
+  await pickRow('sleep');
+  const current = rootList(/^current-parent chain/i)!;
+  expect(within(current).getByRole('button', { name: 'launchd' })).toBeInTheDocument();
+  expect(rootList(/^launch chain/i)).toBeInTheDocument();
+  expect(rootList(/^responsible chain/i)).toBeInTheDocument();
+  expect(screen.queryByText(/same chain/)).not.toBeInTheDocument();
+}, 60_000);
+
+test('roots: a process with no responsible process says so', async () => {
+  renderTriage(await loadLab());
+  await pickRow('Installer');
+  expect(rootList(/^responsible chain/i)).not.toBeInTheDocument();
+  expect(screen.getByText(/No responsible recorded\./)).toBeInTheDocument();
+}, 60_000);
+
+test('before a row is picked, the pane counts the unreviewed rows by severity', async () => {
+  const cap = await loadLab();
+  renderTriage(cap);
+  const rows = await screen.findAllByRole('option');
+  const n = rows.length;
+  expect(screen.getByText(`of ${n} flagged rows are unreviewed`, { exact: false })).toBeInTheDocument();
+  const high = cap.analysis.queue.filter(q => q.severity === 'high').length;
+  const split = document.querySelector('.sev-split')!;
+  expect(split.textContent).toContain(`high ${high}`);
+}, 60_000);
+
 test('confirm via keyboard persists verdict', async () => {
   const { setVerdict } = renderTriage(await loadLab());
   await user.click(screen.getByText(/display dialog/));
@@ -1304,7 +1347,7 @@ test('pressing the verdict a process already has takes it back to unreviewed (bu
   const { setVerdict } = renderTriage(await loadLab());
   await user.click(screen.getByText(/display dialog/));
   const confirm = screen.getByRole('button', { name: /confirm suspicious/i });
-  const benign = screen.getByRole('button', { name: /^✕ benign/i });
+  const benign = screen.getByRole('button', { name: /^benign/i });
   expect(confirm).toHaveAttribute('aria-pressed', 'false');
   await user.click(confirm);
   expect(setVerdict).toHaveBeenLastCalledWith(await osascriptId(), 'confirmed', undefined);

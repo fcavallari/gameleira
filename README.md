@@ -48,7 +48,7 @@ sudo eslogger fork exec exit create rename unlink setextattr btm_launch_item_add
 
 ## Using it
 
-- **Triage** lists the queue (see below). Click a row, or move with `j` / `k`; `c` confirms a process as suspicious, `b` marks it benign, `n` puts the cursor in its note, `t` shows it in the tree. Pressing the verdict a process already has takes it back to unreviewed.
+- **Triage** lists the queue (see below). Click a row, or move with `j` / `k`; `c` confirms a process as suspicious, `b` marks it benign, `n` puts the cursor in its note, `t` shows it in the tree. Pressing the verdict a process already has takes it back to unreviewed. In the detail pane, *Launched by* draws each root of the process as its own column (original parent, current parent, responsible), oldest first, all coming down into the process; a root that is the same chain as the original parent is named under it instead of drawn twice.
 - **Tree** shows every process. The parent mode picks which root to follow: *Original parent* (who forked it), *Current parent* (who it sits under now, so an orphan is under launchd) or *Responsible* (the app that caused it). Unflagged processes are folded into grey “unflagged” rows with counts; the checkbox unfolds them. Search keeps the matches and their ancestors.
 - **Confirmed** lists the confirmed processes of every capture in the session and exports the session as JSON, or imports one. The export includes the full command line of each verdict, and command lines can hold secrets (a password passed to `dscl -authonly`); tick “Redact command-line arguments” to replace every argument after the program name. Environment variables are left out unless you ask. Exports made by earlier builds (format `eslogger-viewer-session`) still import.
 
