@@ -44,6 +44,28 @@ vi.mock('../src/session/folder', async importOriginal => ({
   rememberedFolder: async () => folderMemory.dir,
   rememberFolder: async (d: unknown) => { folderMemory.dir = d; },
 }));
+// Same for remembered capture files: kept in a map, keyed `${sessionId}|${fingerprint}`.
+const captureFileMemory = vi.hoisted(() => new Map<string, unknown>());
+vi.mock('../src/session/capture-files', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/session/capture-files')>(),
+  rememberCaptureFile: async (sid: string, fp: string, h: unknown) => { captureFileMemory.set(`${sid}|${fp}`, h); },
+  rememberedCaptureFiles: async (sid: string) => new Map([...captureFileMemory].filter(([k]) => k.startsWith(`${sid}|`))
+    .map(([k, h]) => [k.slice(sid.length + 1), h])),
+  forgetCaptureFiles: async (sid: string) => { for (const k of [...captureFileMemory.keys()]) if (k.startsWith(`${sid}|`)) captureFileMemory.delete(k); },
+}));
+/** A file handle as Chromium gives one, for a fixture; `state` answers both permission calls; `gone` makes it unreadable. */
+function fileHandle(name: LabName, state: PermissionState = 'granted', gone = false) {
+  return {
+    kind: 'file' as const, name,
+    getFile: vi.fn(async () => { if (gone) throw new DOMException('gone', 'NotFoundError'); return dropped(name); }),
+    queryPermission: vi.fn(async () => state),
+    requestPermission: vi.fn(async () => state),
+  };
+}
+/** Makes the page see a browser with file handles whose picker hands out `handles`. */
+function handleBrowser(handles: ReturnType<typeof fileHandle>[]): void {
+  Object.defineProperty(window, 'showOpenFilePicker', { configurable: true, writable: true, value: vi.fn(async () => handles) });
+}
 /** Makes the page see a folder-capable browser (Chromium) whose picker hands out `dir`. */
 function folderBrowser(dir: DirHandle | null): ReturnType<typeof vi.fn> {
   const pick = vi.fn(async () => { if (!dir) throw new DOMException('closed', 'AbortError'); return dir; });
@@ -89,6 +111,8 @@ beforeEach(() => {
   URL.revokeObjectURL = vi.fn();
   folderMemory.dir = null;
   delete (window as { showDirectoryPicker?: unknown }).showDirectoryPicker;
+  captureFileMemory.clear();
+  delete (window as { showOpenFilePicker?: unknown }).showOpenFilePicker;
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -2017,4 +2041,93 @@ test('without a folder-capable browser, opening a session never looks for a save
   render(<App />);
   await user.click(await screen.findByRole('button', { name: 'lab' }));
   expect(await screen.findByRole('heading', { level: 1, name: 'lab' })).toBeInTheDocument();
+});
+
+
+// --- remembered capture files: reload one, reload all -------------------------------------------------------------
+
+/** Session "lab" with both labs added through the browser's picker, then closed and opened again from the home page. */
+async function reopenedWithTwoCaptures(handles = [fileHandle('synthetic-lab-2.jsonl'), fileHandle('synthetic-lab-3.jsonl')]) {
+  handleBrowser(handles);
+  render(<App />);
+  await newSession('lab');
+  await user.click(await screen.findByRole('button', { name: 'Choose capture files' }));
+  await headerShows('111 events');
+  expect(within(screen.getByRole('list', { name: 'Captures' })).getAllByRole('listitem')).toHaveLength(2);
+  await user.click(screen.getByRole('button', { name: 'Sessions' }));
+  await user.click(await screen.findByRole('button', { name: 'lab' }));
+  await screen.findByRole('heading', { level: 1, name: 'lab' });
+  return handles;
+}
+
+test('captures added through the browser’s picker are remembered; Reload all captures reads them all again', async () => {
+  const handles = await reopenedWithTwoCaptures();
+  expect(captureFileMemory.size).toBe(2);
+  expect(await screen.findByText('Re-add synthetic-lab-3.jsonl to continue')).toBeInTheDocument();
+  await user.click(await screen.findByRole('button', { name: 'Reload all captures' }));
+  await headerShows('111 events');
+  await waitFor(() => { expect(screen.queryByText(/^Re-add/)).not.toBeInTheDocument(); });
+  for (const h of handles) expect(h.getFile).toHaveBeenCalledTimes(2);
+});
+
+test('one capture that is not loaded can be reloaded on its own, from the drop zone or the capture list', async () => {
+  const [first, second] = await reopenedWithTwoCaptures();
+  expect(await screen.findByText('Reload this session’s captures, or drop a capture file')).toBeInTheDocument();
+  const switcher = screen.getByLabelText(/capture/i, { selector: 'select' });
+  await user.selectOptions(switcher, within(switcher).getByRole('option', { name: 'synthetic-lab-3.jsonl (not loaded)' }));
+  expect(await screen.findByText(/synthetic-lab-3\.jsonl is not loaded\. Reload it, or drop its file to continue\./)).toBeInTheDocument();
+  const zone = screen.getByRole('region', { name: 'Add a capture' });
+  await user.click(within(zone).getByRole('button', { name: 'Reload synthetic-lab-3.jsonl' }));
+  await headerShows('111 events');
+  expect(second!.getFile).toHaveBeenCalledTimes(2);
+  expect(first!.getFile).toHaveBeenCalledTimes(1);
+  // The other one is listed with its own Reload.
+  await user.click(await screen.findByRole('button', { name: 'Reload synthetic-lab-2.jsonl' }));
+  await waitFor(() => { expect(first!.getFile).toHaveBeenCalledTimes(2); });
+  await waitFor(() => { expect(screen.queryByText(/^Re-add/)).not.toBeInTheDocument(); });
+});
+
+test('a reload asks for access when the browser forgot it; a file that moved or was refused is named, the rest load', async () => {
+  const moved = fileHandle('synthetic-lab-2.jsonl');
+  const refusedLater = fileHandle('synthetic-lab-3.jsonl');
+  await reopenedWithTwoCaptures([moved, refusedLater]);
+  moved.getFile.mockRejectedValue(new DOMException('gone', 'NotFoundError'));
+  refusedLater.queryPermission.mockResolvedValue('prompt');
+  refusedLater.requestPermission.mockResolvedValue('denied');
+  await user.click(await screen.findByRole('button', { name: 'Reload all captures' }));
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent('synthetic-lab-2.jsonl: the file is no longer where it was; add it again');
+  expect(alert).toHaveTextContent('synthetic-lab-3.jsonl: access to the file was refused');
+  expect(refusedLater.requestPermission).toHaveBeenCalledWith({ mode: 'read' });
+});
+
+test('a dropped file is remembered too, when the browser gives its handle', async () => {
+  handleBrowser([]);
+  render(<App />);
+  await newSession('lab');
+  const h = fileHandle('synthetic-lab-2.jsonl');
+  const file = dropped('synthetic-lab-2.jsonl');
+  const item = { kind: 'file', getAsFile: () => file, getAsFileSystemHandle: vi.fn(async () => h) };
+  fireEvent.drop(await screen.findByRole('heading', { level: 1, name: 'lab' }),
+    { dataTransfer: { types: ['Files'], files: [file], items: [item], dropEffect: 'copy' } });
+  await headerShows('111 events');
+  expect(item.getAsFileSystemHandle).toHaveBeenCalled();
+  expect([...captureFileMemory.values()]).toEqual([h]);
+  expect(await screen.findByRole('button', { name: 'Reload all captures' })).toBeInTheDocument();
+});
+
+test('deleting a session forgets its capture files', async () => {
+  await reopenedWithTwoCaptures();
+  await user.click(screen.getByRole('button', { name: 'Sessions' }));
+  await user.click(await screen.findByRole('button', { name: 'Delete lab' }));
+  await waitFor(() => { expect(captureFileMemory.size).toBe(0); });
+});
+
+test('without file handles (Safari, Firefox) nothing is remembered and there is no Reload', async () => {
+  render(<App />);
+  await newSession('lab');
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
+  await headerShows('111 events');
+  expect(captureFileMemory.size).toBe(0);
+  expect(screen.queryByRole('button', { name: /Reload/ })).not.toBeInTheDocument();
 });

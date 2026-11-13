@@ -7,6 +7,7 @@ import { basename, latestImage } from '../model/util';
 import { SEVERITY_RANK, type Severity } from '../rules/rules';
 import type { QueueItem } from '../rules/engine';
 import { importSession, reimportSession, type SessionExport } from '../session/export';
+import { forgetCaptureFiles, handlesSupported, rememberCaptureFile, rememberedCaptureFiles, reopenCaptureFile, type CaptureFileHandle } from '../session/capture-files';
 import { folderSupported, pickFolder, rememberedFolder, rememberFolder, type DirHandle } from '../session/folder';
 import { evictLru, MAX_LOADED_BYTES, touch } from '../session/lru';
 import { applyRoutine, isRiskyRoutine, NO_IDENTITY, programKey, routineImpact, type RoutineResult } from '../session/routine';
@@ -76,7 +77,15 @@ export interface SessionCtx {
   setExportOpts(patch: Partial<{ includeEnv: boolean; redactArgs: boolean }>): void;
   openSession(id: string): Promise<void>;
   closeSession(): void;
-  loadFiles(files: File[]): Promise<void>;
+  /** `handles[i]`, where given, is where `files[i]` came from: it is remembered so the capture can be reloaded. */
+  loadFiles(files: File[], handles?: (CaptureFileHandle | null)[]): Promise<void>;
+  /** The open session's remembered capture files, by fingerprint (Chromium only; empty elsewhere). */
+  captureFiles: Map<string, CaptureFileHandle>;
+  /**
+   * Reads the remembered files of these captures (default: every capture that has one) again and loads them. Call it
+   * from a click: the browser may ask for access. Files that cannot be read are listed in `loadError`.
+   */
+  reloadCaptures(fingerprints?: string[]): Promise<void>;
   setActive(fingerprint: string): void;
   setView(v: View): void;
   /**
@@ -144,6 +153,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
   const [loadError, setLoadError] = useState<string | null>(null);
   const [exportOpts, setExportOptsState] = useState({ includeEnv: false, redactArgs: false });
   const [saveFolder, setSaveFolder] = useState<DirHandle | null>(null);
+  const [captureFiles, setCaptureFiles] = useState<Map<string, CaptureFileHandle>>(new Map());
 
   // Synchronous mirrors: async actions must see the session that is open NOW, not the one they were created in.
   const sessionId = useRef<string | null>(null);
@@ -157,8 +167,8 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
   const writes = useRef<Promise<unknown>>(Promise.resolve());
   /** The verdict the store last accepted, per `${fingerprint}|${procKey}`: what a failed write goes back to. */
   const stored = useRef(new Map<string, Verdict>());
-  const latest = useRef({ session, capRecs, captures, active, allVerdicts, routine });
-  latest.current = { session, capRecs, captures, active, allVerdicts, routine };
+  const latest = useRef({ session, capRecs, captures, active, allVerdicts, routine, captureFiles });
+  latest.current = { session, capRecs, captures, active, allVerdicts, routine, captureFiles };
 
   const report = useCallback((what: string, e: unknown) => { setStoreError(`${what}: ${message(e)}`); }, []);
 
@@ -221,7 +231,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     verdictRef.current = [];
     stored.current = new Map();
     setSession(null); setCapRecs([]); setCaptures(new Map()); setActiveFp(null); setView('triage');
-    setAllVerdicts([]); setRoutine([]); setSelected(null); setSelectedItem(null); setFocus(null); setTriageFilters(DEFAULT_FILTERS); setProgress(null); setLoadError(null);
+    setAllVerdicts([]); setRoutine([]); setCaptureFiles(new Map()); setSelected(null); setSelectedItem(null); setFocus(null); setTriageFilters(DEFAULT_FILTERS); setProgress(null); setLoadError(null);
     void refreshSessions();
   }, [refreshSessions]);
 
@@ -241,7 +251,11 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     sessionId.current = id;
     verdictRef.current = vs;
     stored.current = new Map(vs.map(v => [`${v.fingerprint}|${v.procKey}`, v]));
-    setSession(s); setCapRecs(recs); setAllVerdicts(vs); setRoutine(rs);
+    setSession(s); setCapRecs(recs); setAllVerdicts(vs); setRoutine(rs); setCaptureFiles(new Map());
+    if (handlesSupported()) {
+      // Best-effort: without them the captures are re-added by hand, as in browsers that have no handles.
+      rememberedCaptureFiles(id).then(m => { if (token === openToken.current) setCaptureFiles(m); }, () => { /* see above */ });
+    }
     setCaptures(new Map()); setActiveFp(null); setView('triage'); setSelected(null); setSelectedItem(null); setFocus(null); setTriageFilters(DEFAULT_FILTERS); setProgress(null); setLoadError(null);
   }, [store, report]);
 
@@ -253,6 +267,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
 
   const deleteSession = useCallback(async (id: string) => {
     try { await store.deleteSession(id); } catch (e) { report('Could not delete the session', e); return; }
+    if (handlesSupported()) forgetCaptureFiles(id).catch(() => { /* a stray handle only takes a few bytes */ });
     if (sessionId.current === id) closeSession();
     else await refreshSessions();
   }, [store, closeSession, refreshSessions, report]);
@@ -271,7 +286,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
   }, [store, refreshSessions]);
 
   /** `g` is the session generation the load started under; every state or store write re-checks it. */
-  const loadOne = useCallback(async (sid: string, g: number, file: File): Promise<void> => {
+  const loadOne = useCallback(async (sid: string, g: number, file: File, handle: CaptureFileHandle | null): Promise<void> => {
     const live = () => gen.current === g;
     setProgress({ fileName: file.name, bytes: 0, total: file.size });
     const cap = await runLoad(file, (bytes, total) => { if (live()) setProgress({ fileName: file.name, bytes, total }); });
@@ -283,6 +298,10 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     // Same fingerprint as a stored capture: the store updates size and counts and keeps the verdicts' key.
     await store.upsertCapture(rec);
     store.touchSession(sid).catch(() => { /* best-effort: only the "updated" time is lost */ });
+    if (handle) {
+      rememberCaptureFile(sid, cap.fingerprint, handle).catch(() => { /* it can still be reloaded until the tab closes */ });
+      if (live()) setCaptureFiles(m => new Map(m).set(cap.fingerprint, handle));
+    }
     if (!live()) return;
     const recs = await store.listCaptures(sid);
     if (!live()) return;
@@ -294,7 +313,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     setFocus(null);
   }, [store]);
 
-  const loadFiles = useCallback((files: File[]): Promise<void> => {
+  const loadFiles = useCallback((files: File[], handles?: (CaptureFileHandle | null)[]): Promise<void> => {
     const sid = sessionId.current;
     if (!sid || files.length === 0) return Promise.resolve();
     const g = gen.current;
@@ -304,9 +323,9 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
       if (gen.current !== g) return;
       const errors: string[] = [];
       setLoadError(null);
-      for (const file of files) {
+      for (const [i, file] of files.entries()) {
         if (gen.current !== g) return;
-        try { await loadOne(sid, g, file); }
+        try { await loadOne(sid, g, file, handles?.[i] ?? null); }
         catch (e) { errors.push(files.length > 1 ? `${file.name}: ${message(e)}` : message(e)); }
       }
       if (gen.current === g) { setProgress(null); setLoadError(errors.length ? errors.join('\n') : null); }
@@ -314,6 +333,29 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     queue.current = queue.current.then(run);
     return queue.current;
   }, [loadOne]);
+
+  const reloadCaptures = useCallback(async (fingerprints?: string[]) => {
+    const sid = sessionId.current;
+    if (!sid) return;
+    const g = gen.current;
+    const { capRecs: recs, captureFiles: known } = latest.current;
+    const wanted = (fingerprints ?? recs.map(r => r.fingerprint)).flatMap(fp => {
+      const h = known.get(fp);
+      return h ? [{ h, name: recs.find(r => r.fingerprint === fp)?.fileName ?? h.name }] : [];
+    });
+    setLoadError(null);
+    const files: File[] = [];
+    const handles: CaptureFileHandle[] = [];
+    const errors: string[] = [];
+    // One at a time: each may need the browser to ask for access.
+    for (const { h, name } of wanted) {
+      try { files.push(await reopenCaptureFile(h)); handles.push(h); }
+      catch (e) { errors.push(`${name}: ${message(e)}`); }
+    }
+    if (gen.current !== g) return;
+    if (files.length > 0) await loadFiles(files, handles);
+    if (gen.current === g && errors.length > 0) setLoadError(prev => [prev, ...errors].filter(Boolean).join('\n'));
+  }, [loadFiles]);
 
   // Dev only: `?load=es-lab.jsonl` opens a session named "dev" with that fixture.
   useEffect(() => {
@@ -465,7 +507,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     store, sessions, sessionsLoaded, captureCounts, persisted, storeError, dismissStoreError, createSession, renameSession, deleteSession, importSessionFile,
     reimportSession: reimport, saveFolder, chooseSaveFolder,
     session, capRecs, captures, active, capture, view, allVerdicts, verdicts, routine, routineKeys, triage,
-    selected, selectedItem, focusId: focus?.id ?? null, focusNonce: focus?.n ?? 0, triageFilters, updateTriageFilters, progress, loadError, exportOpts, setExportOpts, openSession, closeSession, loadFiles, setActive, setView,
+    selected, selectedItem, focusId: focus?.id ?? null, focusNonce: focus?.n ?? 0, triageFilters, updateTriageFilters, progress, loadError, exportOpts, setExportOpts, openSession, closeSession, loadFiles, captureFiles, reloadCaptures, setActive, setView,
     setVerdict, toggleVerdict, setNote, addRoutine, removeRoutine, selectProc, selectItem, showInTree,
   };
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
