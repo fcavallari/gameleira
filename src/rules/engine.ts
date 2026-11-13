@@ -1,5 +1,5 @@
 import { ancestry } from '../model/relations';
-import type { CaptureModel, PersistenceItem, ProcId } from '../model/types';
+import type { CaptureModel, Image, PersistenceItem, ProcId, Process } from '../model/types';
 import { basename, imageAt } from '../model/util';
 import { RULES, SEVERITY_RANK as RANK, type MatchResult, type Rule, type Severity } from './rules';
 
@@ -46,6 +46,12 @@ function finding(rule: Rule, res: MatchResult, imgIndex: number | null, persiste
   };
 }
 
+/** The latest image the process exec'd itself (not the copy a fork child starts with). */
+function lastExecImage(p: Process): Image | undefined {
+  for (let i = p.images.length - 1; i >= 0; i--) if (!p.images[i]!.inherited && p.images[i]!.path !== null) return p.images[i];
+  return undefined;
+}
+
 /** Apple's own system daemons (smd, backgroundtaskmanagementd) instigate most launch item registrations. */
 const SYSTEM_DIRS = /^\/(?:System|usr\/libexec|usr\/sbin)\//;
 
@@ -68,6 +74,7 @@ function persistenceOwner(m: CaptureModel, item: PersistenceItem): ProcId | null
 
 export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
   const imageRules = rules.filter(r => r.scope === 'image');
+  const processRules = rules.filter(r => r.scope === 'process');
   const itemRules = rules.filter(r => r.scope === 'persistence');
 
   // 1. Run the rules.
@@ -85,6 +92,13 @@ export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
         if (res) add(p.id, { f: finding(rule, res, imgIndex, null), seq: img.seq, time: img.time });
       }
     });
+    // Process-scoped rules run once per process, including one that forked and never exec'd; ghosts have no events.
+    if (p.ghost) continue;
+    const at = lastExecImage(p) ?? p.images[p.images.length - 1];
+    for (const rule of processRules) {
+      const res = rule.matchProcess?.(p, m);
+      if (res) add(p.id, { f: finding(rule, res, null, null), seq: at?.seq ?? p.firstSeq, time: at?.time ?? p.startTime });
+    }
   }
   const queue: QueueItem[] = [];
   for (const item of m.persistence) {

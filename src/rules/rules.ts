@@ -10,8 +10,10 @@ export interface Rule {
   id: string; title: string; severity: Severity; explanation: string;
   /** Every MITRE ID the rule can cite; a finding cites the subset its trigger fits. */
   mitre: string[];
-  scope: 'image' | 'persistence';
+  /** 'image' runs on every exec'd image; 'process' once per captured process, exec'd or fork-only; 'persistence' per launch item. */
+  scope: 'image' | 'process' | 'persistence';
   match?(ctx: RuleCtx): MatchResult | null;                                  // scope 'image'
+  matchProcess?(p: Process, m: CaptureModel): MatchResult | null;          // scope 'process'
   matchItem?(item: PersistenceItem, m: CaptureModel): MatchResult | null;  // scope 'persistence'
 }
 
@@ -146,15 +148,6 @@ function rest(img: Image): string[] {
 const isAdhoc = (img: Image): boolean => (img.csFlags & 0x2) !== 0;
 const isUnsigned = (img: Image): boolean => !img.isPlatform && img.signingId === null;
 
-/** Last image the rules run on, so per-process rules fire once. */
-function lastRuleImage(p: Process): number {
-  for (let i = p.images.length - 1; i >= 0; i--) {
-    const img = p.images[i]!;
-    if (!img.inherited && img.path !== null) return i;
-  }
-  return -1;
-}
-
 function originalParentImage(m: CaptureModel, p: Process): Image | undefined {
   const parent = p.originalParent !== null ? m.processes.get(p.originalParent) : undefined;
   return parent ? latestImage(parent) : undefined;
@@ -246,9 +239,8 @@ export const RULES: Rule[] = [
   {
     id: 'persistence-plist', title: 'Launch agent/daemon plist written', severity: 'high',
     explanation: PERSISTENCE_EXPLANATION,
-    mitre: ['T1543.001', 'T1543.004'], scope: 'image',
-    match: ({ m, p, imgIndex }) => {
-      if (imgIndex !== lastRuleImage(p)) return null;
+    mitre: ['T1543.001', 'T1543.004'], scope: 'process',
+    matchProcess: (p, m) => {
       const folded = new Set<string>();
       for (const it of m.persistence) {
         if (it.kind === 'add' && it.creator === p.id && it.plistPath !== null) folded.add(normPath(it.plistPath));
@@ -410,9 +402,8 @@ export const RULES: Rule[] = [
   {
     id: 'orphaned', title: 'Detached from its parent', severity: 'low',
     explanation: 'Detached from the process that started it, so it keeps running after its parent exits and no longer shows up under it. Malware double-forks like this to break the link to whatever launched it.',
-    mitre: ['T1036.009'], scope: 'image',
-    match: ({ m, p, imgIndex }) => {
-      if (imgIndex !== lastRuleImage(p)) return null;
+    mitre: ['T1036.009'], scope: 'process',
+    matchProcess: (p, m) => {
       if (p.ppid !== 1 || p.originalPpid === null || p.originalPpid === 1) return null;
       const parent = originalParentImage(m, p)?.path ?? null;
       if (basename(parent) === 'xpcproxy') return null;

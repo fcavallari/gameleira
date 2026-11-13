@@ -190,3 +190,35 @@ describe('persistence-item severity says why', () => {
     expect(q.items.find(x => x.item.key === 'i:btm:7710')!.item.severity).toBe('med');
   });
 });
+
+describe('process-scoped rules see processes that fork and never exec', () => {
+  const zsh = proc('500:1', [apple('/bin/zsh', ['zsh'])], { exitTime: '2026-11-12T00:00:01.000Z' });
+  const forkOnly = (o: Parameters<typeof proc>[2] = {}) =>
+    proc('501:1', [apple('/bin/zsh', ['zsh'], { token: '501:1', inherited: true, seq: 3 })],
+      { forkParent: '500:1', originalParent: '500:1', originalPpid: 500, ppid: 1, ...o });
+  test('a fork-only child reparented to launchd is orphaned', () => {
+    const q = analyze(capture([zsh, forkOnly()])).queue.find(x => x.procId === '501:1');
+    expect(q?.findings.map(f => f.ruleId)).toContain('orphaned');
+  });
+  test('a fork-only child writing a launch agent plist is high', () => {
+    const p = forkOnly({ ppid: 500 });
+    p.fileOps.push({ kind: 'create', path: '/Users/u/Library/LaunchAgents/evil.plist', time: 't', seq: 4 });
+    const q = analyze(capture([zsh, p])).queue.find(x => x.procId === '501:1');
+    expect(q?.severity).toBe('high');
+    expect(q?.findings.map(f => f.ruleId)).toEqual(['persistence-plist']);
+  });
+  test('a renamed-into-place plist counts too', () => {
+    const p = forkOnly({ ppid: 500 });
+    p.fileOps.push({ kind: 'rename', path: '/tmp/x', toPath: '/Library/LaunchDaemons/evil.plist', time: 't', seq: 4 });
+    expect(analyze(capture([zsh, p])).queue.find(x => x.procId === '501:1')?.findings.map(f => f.ruleId)).toEqual(['persistence-plist']);
+  });
+  test('ghosts are skipped', () => {
+    const g = proc('502:1', [], { ghost: true, ppid: 1, originalPpid: 500 });
+    expect(analyze(capture([zsh, g])).queue.some(x => x.procId === '502:1')).toBe(false);
+  });
+  test('fire once per process, even with several exec images', () => {
+    const p = proc('503:1', [apple('/bin/sh', ['sh'], { seq: 1 }), apple('/bin/bash', ['sh'], { seq: 2 })], { originalPpid: 500, originalParent: '500:1', ppid: 1 });
+    const fs = analyze(capture([zsh, p])).queue.find(x => x.procId === '503:1')!.findings.filter(f => f.ruleId === 'orphaned');
+    expect(fs).toHaveLength(1);
+  });
+});
