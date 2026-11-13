@@ -29,10 +29,27 @@ import { apple, capture, img as synthImg, persistenceItem, proc } from './synth'
 import { StoreErrorBanner } from '../src/ui/StoreErrorBanner';
 import { openStore, type CaptureRec, type Status, type Store, type Verdict } from '../src/session/store';
 import { fixture, type FixtureName } from './fixtures';
+import { exportSession, saveFileName } from '../src/session/export';
+import type { DirHandle } from '../src/session/folder';
+import { fakeFolder } from './fake-folder';
 
 // The real runLoad starts an inline Worker, which jsdom lacks; delegate to loadCapture instead.
 vi.mock('../src/ingest/run', () => ({ runLoad: vi.fn() }));
 const runLoadMock = vi.mocked(runLoad);
+
+// A directory handle cannot go through fake-indexeddb's structured clone: remember the save folder in memory instead.
+const folderMemory = vi.hoisted(() => ({ dir: null as unknown }));
+vi.mock('../src/session/folder', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/session/folder')>(),
+  rememberedFolder: async () => folderMemory.dir,
+  rememberFolder: async (d: unknown) => { folderMemory.dir = d; },
+}));
+/** Makes the page see a folder-capable browser (Chromium) whose picker hands out `dir`. */
+function folderBrowser(dir: DirHandle | null): ReturnType<typeof vi.fn> {
+  const pick = vi.fn(async () => { if (!dir) throw new DOMException('closed', 'AbortError'); return dir; });
+  Object.defineProperty(window, 'showDirectoryPicker', { configurable: true, writable: true, value: pick });
+  return pick;
+}
 
 const CMD = /sudo eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove/;
 
@@ -70,6 +87,8 @@ beforeEach(() => {
   window.confirm = vi.fn(() => true);
   URL.createObjectURL = vi.fn(() => 'blob:fake');
   URL.revokeObjectURL = vi.fn();
+  folderMemory.dir = null;
+  delete (window as { showDirectoryPicker?: unknown }).showDirectoryPicker;
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -215,9 +234,39 @@ test('Save session, beside the session name, downloads the session while triagin
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { clicked.push(this.download); });
   const before = vi.mocked(URL.createObjectURL).mock.calls.length;
   await user.click(screen.getByRole('button', { name: 'Save session' }));
-  await waitFor(() => { expect(clicked).toEqual(['lab.gameleira-session.json']); });
+  await waitFor(() => { expect(clicked).toEqual([expect.stringMatching(/^lab\.[0-9a-f]{8}\.gameleira-session\.json$/)]); });
   const saved = JSON.parse(await readBlob(vi.mocked(URL.createObjectURL).mock.calls[before]![0] as Blob)) as { format: string };
   expect(saved.format).toBe('gameleira-session');
+});
+
+test('where the browser can, Save session asks for a folder once, then saves into it without asking', async () => {
+  const dir = fakeFolder('cases');
+  const pick = folderBrowser(dir);
+  render(<App />);
+  await newSession('lab');
+  expect(await screen.findByText(/The first save asks for a folder/)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Save session' }));
+  await waitFor(() => { expect(Object.keys(dir.files)).toHaveLength(1); });
+  const name = Object.keys(dir.files)[0]!;
+  expect(name).toMatch(/^lab\.[0-9a-f]{8}\.gameleira-session\.json$/);
+  expect(JSON.parse(dir.files[name]!.text)).toMatchObject({ format: 'gameleira-session', session: { name: 'lab' } });
+  expect(await screen.findByText(`Saved ${name} in “cases”.`)).toBeInTheDocument();
+  expect(screen.getByText(/Saves into “cases”/)).toBeInTheDocument();
+  expect(folderMemory.dir).toBe(dir);
+
+  await user.click(screen.getByRole('button', { name: 'Save session' }));
+  await screen.findByText(`Saved ${name} in “cases”.`);
+  expect(pick).toHaveBeenCalledTimes(1);
+  expect(Object.keys(dir.files)).toEqual([name]);   // the same file, replaced
+});
+
+test('closing the folder picker saves nothing and reports nothing', async () => {
+  folderBrowser(null);
+  render(<App />);
+  await newSession('lab');
+  await user.click(await screen.findByRole('button', { name: 'Save session' }));
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.queryByText(/^Saved /)).not.toBeInTheDocument();
 });
 
 test('beside Save session, a warning says the file holds command lines until redaction is ticked on the Confirmed tab', async () => {
@@ -1885,3 +1934,87 @@ test('setVerdict can target a capture that is not the active one', async () => {
   expect(await store.listVerdicts(sessionId, demo.fingerprint)).toHaveLength(1);
   expect(await store.listVerdicts(sessionId, ctx.active!)).toHaveLength(0);
 }, 60_000);
+
+
+// --- reopening a session: a saved copy in the save folder -----------------------------------------------------------
+
+/** A session "lab" with one confirmed verdict, and its saved file in the folder with that verdict made benign. */
+async function savedCopyThatDiffers() {
+  const store = await openStore();
+  const s = await store.createSession('lab');
+  const v: Verdict = { sessionId: s.id, fingerprint: 'fp', procKey: 'p1', status: 'confirmed', note: 'here', updated: 't',
+    snapshot: { name: 'osascript', path: null, args: null, ruleIds: [], severity: null, startTime: null } };
+  await store.setVerdict(v);
+  const out = await exportSession(store, s.id, { includeEnv: false });
+  const file = { ...out, verdicts: [{ ...out.verdicts[0]!, status: 'benign', note: 'from the file' }] };
+  const dir = fakeFolder('cases', { [saveFileName(s)]: { text: JSON.stringify(file), lastModified: Date.now() + 60_000 } });
+  folderBrowser(dir);
+  folderMemory.dir = dir;
+  return { store, s, dir };
+}
+
+test('opening a session finds a different saved copy in the save folder and offers to reimport it', async () => {
+  const { store, s } = await savedCopyThatDiffers();
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: 'lab' }));
+  const offer = await screen.findByRole('region', { name: 'Saved copy of lab' });
+  expect(offer).toHaveTextContent('A saved copy of “lab” is in “cases”');
+  expect(offer).toHaveTextContent(saveFileName(s));
+  expect(offer).toHaveTextContent('The file has 1 reviewed process, 0 routine marks; this browser has 1 reviewed process, 0 routine marks.');
+  expect(screen.queryByRole('heading', { level: 1, name: 'lab' })).not.toBeInTheDocument();   // not opened yet
+
+  await user.click(within(offer).getByRole('button', { name: 'Reimport and open' }));
+  expect(await screen.findByRole('heading', { level: 1, name: 'lab' })).toBeInTheDocument();
+  const vs = await store.listVerdicts(s.id);
+  expect(vs.map(v => [v.status, v.note])).toEqual([['benign', 'from the file']]);
+  expect((await store.listSessions()).map(x => [x.id, x.name])).toEqual([[s.id, 'lab']]);   // replaced in place
+});
+
+test('"Open without it" opens the session as this browser holds it', async () => {
+  const { store, s } = await savedCopyThatDiffers();
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: 'lab' }));
+  await user.click(await screen.findByRole('button', { name: 'Open without it' }));
+  expect(await screen.findByRole('heading', { level: 1, name: 'lab' })).toBeInTheDocument();
+  expect((await store.listVerdicts(s.id)).map(v => v.status)).toEqual(['confirmed']);
+});
+
+test('a saved copy older than this browser’s changes is offered with a warning that they would be lost', async () => {
+  const { s, dir } = await savedCopyThatDiffers();
+  dir.files[saveFileName(s)]!.lastModified = Date.parse(s.updated) - 60_000;
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: 'lab' }));
+  expect(await screen.findByText(/This browser has changes made after the file was saved; they would be lost/)).toBeInTheDocument();
+});
+
+test('a saved copy that matches this browser opens the session without asking', async () => {
+  const store = await openStore();
+  const s = await store.createSession('lab');
+  const out = await exportSession(store, s.id, { includeEnv: false });
+  const dir = fakeFolder('cases', { [saveFileName(s)]: { text: JSON.stringify(out), lastModified: Date.now() } });
+  folderBrowser(dir);
+  folderMemory.dir = dir;
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: 'lab' }));
+  expect(await screen.findByRole('heading', { level: 1, name: 'lab' })).toBeInTheDocument();
+  expect(screen.queryByRole('region', { name: /Saved copy/ })).not.toBeInTheDocument();
+});
+
+test('when access to the save folder is refused, the session opens without looking', async () => {
+  const { store, s } = await savedCopyThatDiffers();
+  const refused = fakeFolder('cases', {}, 'denied');
+  folderMemory.dir = refused;
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: 'lab' }));
+  expect(await screen.findByRole('heading', { level: 1, name: 'lab' })).toBeInTheDocument();
+  expect(refused.requestPermission).toHaveBeenCalledWith({ mode: 'read' });
+  expect((await store.listVerdicts(s.id)).map(v => v.status)).toEqual(['confirmed']);
+});
+
+test('without a folder-capable browser, opening a session never looks for a saved copy', async () => {
+  await savedCopyThatDiffers();
+  delete (window as { showDirectoryPicker?: unknown }).showDirectoryPicker;
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: 'lab' }));
+  expect(await screen.findByRole('heading', { level: 1, name: 'lab' })).toBeInTheDocument();
+});

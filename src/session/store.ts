@@ -29,6 +29,11 @@ export interface Store {
   listRoutine(sessionId: string): Promise<RoutineRec[]>;
   /** Creates a session named `name` and stores all rows under it in ONE transaction: all or nothing. */
   importAll(name: string, captures: CaptureRec[], verdicts: Verdict[], routine: RoutineRec[]): Promise<Session>;
+  /**
+   * Swaps the captures, verdicts and routine marks of session `id` for these, in ONE transaction: all or nothing. The
+   * session keeps its id and name; `updated` becomes now. Rejects for an unknown id.
+   */
+  replaceAll(id: string, captures: CaptureRec[], verdicts: Verdict[], routine: RoutineRec[]): Promise<void>;
 }
 
 interface Schema extends DBSchema {
@@ -154,6 +159,26 @@ export async function openStore(name: string = DB_NAME): Promise<Store> {
         throw e;
       }
       return s;
+    },
+    async replaceAll(id, captures, verdicts, routine) {
+      const tx = (await conn()).transaction(['sessions', 'captures', 'verdicts', 'routine'], 'readwrite');
+      const pending: Promise<unknown>[] = [tx.done];
+      try {
+        const s = await tx.objectStore('sessions').get(id);
+        if (!s) throw new Error(`no such session: ${id}`);
+        pending.push(tx.objectStore('sessions').put({ ...s, updated: now() }));
+        pending.push(tx.objectStore('captures').delete(prefixRange(id)));
+        pending.push(tx.objectStore('verdicts').delete(prefixRange(id)));
+        pending.push(tx.objectStore('routine').delete(prefixRange(id)));
+        for (const c of captures) pending.push(tx.objectStore('captures').put({ ...c, sessionId: id }));
+        for (const v of verdicts) pending.push(tx.objectStore('verdicts').put({ ...v, sessionId: id }));
+        for (const r of routine) pending.push(tx.objectStore('routine').put({ ...r, sessionId: id }));
+        await Promise.all(pending);
+      } catch (e) {
+        try { tx.abort(); } catch { /* already finished or aborted */ }
+        await Promise.allSettled(pending);
+        throw e;
+      }
     },
   };
 }

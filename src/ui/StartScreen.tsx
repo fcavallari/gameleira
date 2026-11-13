@@ -1,4 +1,7 @@
 import { useState, type FormEvent } from 'react';
+import { diffExport, type ExportDiff } from '../session/export';
+import { findSavedCopy, folderSupported, permitted, type SavedCopy } from '../session/folder';
+import type { Session } from '../session/store';
 import { Canopy, RootField, TRUNKS, Wordmark } from './Brand';
 import { ImportSession } from './ConfirmedTab';
 import { CaptureCommand } from './SessionScreen';
@@ -23,6 +26,48 @@ export function StartScreen() {
   const [name, setName] = useState('');
   const [renaming, setRenaming] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
+  /** The session being looked up in the save folder before it opens. */
+  const [checking, setChecking] = useState<string | null>(null);
+  /** A saved copy that differs from what this browser holds, offered for reimport in its session's row. */
+  const [offer, setOffer] = useState<{ id: string; folder: string; copy: SavedCopy; diff: ExportDiff } | null>(null);
+  const [offerError, setOfferError] = useState<string | null>(null);
+
+  /**
+   * Opens a session, first looking in the folder Save session writes into for a saved copy of it. When one turns up
+   * and it differs from what this browser holds, the session's row asks whether to reimport it instead of opening.
+   * A folder that cannot be read (access refused, folder gone) is passed over: the session opens as it is.
+   */
+  const open = async (s: Session) => {
+    const dir = c.saveFolder;
+    if (dir && folderSupported()) {
+      setChecking(s.id);
+      try {
+        // Asked first, while the click still counts: the browser forgets the grant after a restart.
+        if (await permitted(dir, 'read', true)) {
+          const copy = await findSavedCopy(dir, s);
+          if (copy) {
+            const [caps, vs, rs] = await Promise.all([c.store.listCaptures(s.id), c.store.listVerdicts(s.id), c.store.listRoutine(s.id)]);
+            const diff = diffExport(copy.data, caps, vs, rs);
+            if (!diff.same) {
+              setOfferError(null);
+              setOffer({ id: s.id, folder: dir.name, copy, diff });
+              return;
+            }
+          }
+        }
+      } catch { /* see above */ } finally { setChecking(null); }
+    }
+    await c.openSession(s.id);
+  };
+  const reimport = async (id: string, copy: SavedCopy) => {
+    setOfferError(null);
+    try { await c.reimportSession(id, copy.data); } catch (e) {
+      setOfferError(`Could not reimport ${copy.fileName}: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    setOffer(null);
+    await c.openSession(id);
+  };
 
   const create = async (e: FormEvent) => {
     e.preventDefault();
@@ -96,8 +141,13 @@ export function StartScreen() {
             )}
             <ul className="sessions" aria-label="Sessions">
               {c.sessions.map(s => (
-                <li key={s.id} className={renaming === s.id ? 'node editing' : 'node srow'}>
-                  {renaming === s.id ? (
+                <li key={s.id} className={renaming === s.id || offer?.id === s.id ? 'node editing' : 'node srow'}>
+                  {offer?.id === s.id ? (
+                    <ReimportOffer session={s} folder={offer.folder} copy={offer.copy} diff={offer.diff} error={offerError}
+                      onReimport={() => { void reimport(s.id, offer.copy); }}
+                      onOpen={() => { setOffer(null); void c.openSession(s.id); }}
+                      onCancel={() => { setOffer(null); }} />
+                  ) : renaming === s.id ? (
                     <form className="new-session" onSubmit={e => { void rename(e, s.id); }}>
                       <label>New name <input autoFocus value={newName} onChange={e => { setNewName(e.target.value); }} /></label>
                       <button type="submit" className="primary accent">Save</button>
@@ -105,9 +155,12 @@ export function StartScreen() {
                     </form>
                   ) : (
                     <>
-                      <button className="link sname truncate" onClick={() => { void c.openSession(s.id); }}>{s.name}</button>
+                      <button className="link sname truncate" aria-busy={checking === s.id} disabled={checking !== null}
+                        onClick={() => { void open(s); }}>{s.name}</button>
                       <span className="num">{count(s.id)} <span className="muted">{count(s.id) === 1 ? 'capture' : 'captures'}</span></span>
-                      <span className="mono muted when"><span className="sr-only">updated </span>{when(s.updated)}</span>
+                      <span className="mono muted when">{checking === s.id
+                        ? <span role="status">Looking in “{c.saveFolder?.name}”…</span>
+                        : <><span className="sr-only">updated </span>{when(s.updated)}</>}</span>
                       <span className="acts">
                         <button className="ghost" aria-label={`Rename ${s.name}`} onClick={() => { setRenaming(s.id); setNewName(s.name); }}>Rename</button>
                         <button className="ghost danger" aria-label={`Delete ${s.name}`} onClick={() => { void remove(s.id, s.name); }}>Delete</button>
@@ -143,5 +196,34 @@ export function StartScreen() {
         </div>
       </main>
     </div>
+  );
+}
+
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+const counts = (d: ExportDiff['file']): string => `${plural(d.reviewed, 'reviewed process', 'reviewed processes')}, ${plural(d.routine, 'routine mark', 'routine marks')}`;
+
+/** Shown in a session's row instead of opening it, when the save folder holds a copy that differs from this browser's. */
+function ReimportOffer({ session, folder, copy, diff, error, onReimport, onOpen, onCancel }: {
+  session: Session; folder: string; copy: SavedCopy; diff: ExportDiff; error: string | null;
+  onReimport(): void; onOpen(): void; onCancel(): void;
+}) {
+  const saved = new Date(copy.lastModified).toISOString();
+  // Something changed here after the file was written: reimporting would drop it.
+  const newerHere = session.updated > saved;
+  return (
+    <section className="reimport" aria-label={`Saved copy of ${session.name}`}>
+      <h3>A saved copy of “{session.name}” is in “{folder}”</h3>
+      <p className="small"><span className="mono">{copy.fileName}</span>, saved {when(saved)}.{' '}
+        {copy.byId ? null : <span className="warn">It was saved from another session with the same name. </span>}
+        The file has {counts(diff.file)}; this browser has {counts(diff.stored)}.</p>
+      <p className="muted small">Reimporting replaces this session’s verdicts, notes and routine marks with the file’s.
+        {newerHere && <> <span className="warn">This browser has changes made after the file was saved; they would be lost.</span></>}</p>
+      <div className="acts">
+        <button className="primary accent" onClick={onReimport}>Reimport and open</button>
+        <button className="ghost" onClick={onOpen}>Open without it</button>
+        <button className="ghost" onClick={onCancel}>Cancel</button>
+      </div>
+      {error && <p role="alert" className="error">{error}</p>}
+    </section>
   );
 }

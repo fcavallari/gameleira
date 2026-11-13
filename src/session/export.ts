@@ -102,3 +102,59 @@ export async function importSession(store: Store, data: SessionExport): Promise<
   validateExport(data);
   return store.importAll(`${data.session.name} (imported)`, data.captures, data.verdicts, data.routine);
 }
+
+/**
+ * Replaces the captures, verdicts and routine marks of session `sessionId` with the file's; the session keeps its name
+ * and id. Validated first and written in one transaction, so a bad file changes nothing.
+ */
+export async function reimportSession(store: Store, sessionId: string, data: SessionExport): Promise<void> {
+  validateExport(data);
+  await store.replaceAll(sessionId, data.captures, data.verdicts, data.routine);
+}
+
+/** The parsed export in `text`, or a readable error. Writes nothing. */
+export function parseExport(text: string): SessionExport {
+  let data: unknown;
+  try { data = JSON.parse(text); } catch { throw new Error('Not a JSON file'); }
+  validateExport(data);
+  return data;
+}
+
+/** The session name made safe for a file name. */
+export const slug = (s: string): string => s.replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'session';
+
+/** Eight hex digits of FNV-1a over the session id: short, stable, and different for two sessions with the same name. */
+export function idHash(id: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) { h ^= id.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+export const SAVE_SUFFIX = '.gameleira-session.json';
+
+/** What Save session calls the file: `<name>.<id hash>.gameleira-session.json`. */
+export const saveFileName = (s: Pick<Session, 'id' | 'name'>): string => `${slug(s.name)}.${idHash(s.id)}${SAVE_SUFFIX}`;
+
+/** What reimporting would change, as counts and a yes/no: the file against what the browser holds for the session. */
+export interface ExportDiff { same: boolean; file: DiffSide; stored: DiffSide }
+/** `reviewed`: verdicts that are confirmed or benign. */
+export interface DiffSide { reviewed: number; routine: number }
+
+/**
+ * Compares what a reimport would replace: capture fingerprints, each verdict's status and note, and routine marks.
+ * Snapshots are left out, so a file saved with redacted arguments still counts as the same.
+ */
+export function diffExport(data: SessionExport, captures: CaptureRec[], verdicts: Verdict[], routine: RoutineRec[]): ExportDiff {
+  const key = (caps: { fingerprint: string }[], vs: Verdict[], rs: { programKey: string }[]): string => JSON.stringify([
+    caps.map(c => c.fingerprint).sort(),
+    // Unreviewed with no note is the same as no verdict at all.
+    vs.filter(v => v.status !== 'unreviewed' || v.note !== '').map(v => [v.fingerprint, v.procKey, v.status, v.note].join('\u0000')).sort(),
+    rs.map(r => r.programKey).sort(),
+  ]);
+  const side = (vs: Verdict[], rs: RoutineRec[]): DiffSide => ({ reviewed: vs.filter(v => v.status !== 'unreviewed').length, routine: rs.length });
+  return {
+    same: key(data.captures, data.verdicts, data.routine) === key(captures, verdicts, routine),
+    file: side(data.verdicts, data.routine),
+    stored: side(verdicts, routine),
+  };
+}
