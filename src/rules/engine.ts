@@ -1,10 +1,12 @@
 import { ancestry } from '../model/relations';
-import type { CaptureModel, Image, PersistenceItem, ProcId, Process } from '../model/types';
-import { basename, imageAt } from '../model/util';
-import { RULES, SEVERITY_RANK as RANK, type MatchResult, type Rule, type Severity } from './rules';
+import type { CaptureModel, Image, ProcId, Process } from '../model/types';
+import { basename } from '../model/util';
+import { persistenceOwner, RULES, SEVERITY_RANK as RANK, type MatchResult, type Rule, type Severity } from './rules';
 
 export interface Finding { ruleId: string; severity: Severity; title: string; explanation: string;
-  mitre: string[]; evidence: string; imgIndex: number | null; persistenceId: string | null }
+  mitre: string[]; evidence: string; imgIndex: number | null; persistenceId: string | null;
+  /** A trait of the binary (unsigned, ad-hoc), not a technique: it cites no MITRE ID. */
+  trait: boolean }
 export interface QueueItem { key: string; kind: 'process' | 'persistence'; procId: ProcId | null;
   persistenceId: string | null; severity: Severity; findings: Finding[]; inFlaggedChain: boolean;
   /** One of 3 or more different recon tools run under the same parent within 60 s. */
@@ -13,15 +15,11 @@ export interface QueueItem { key: string; kind: 'process' | 'persistence'; procI
 export interface Analysis { queue: QueueItem[]; findings: Map<ProcId, Finding[]>;
   contextOnly: Map<ProcId, Finding[]> }
 
-/** Low-signal rules that queue a process only in context (spec §6.3). */
-const GATED = new Set(['recon', 'adhoc']);
-/** Gated findings; a low `odd-location-exec` (team-signed, or a tooling dot-dir) is gated like `adhoc`. */
-const isGated = (f: Finding): boolean =>
-  GATED.has(f.ruleId) || (f.ruleId === 'odd-location-exec' && f.severity === 'low');
 const CLUSTER_TOOLS = 3;
 const CLUSTER_WINDOW_MS = 60_000;
 
-interface Hit { f: Finding; seq: number; time: string | null }
+/** `chainable`: the finding may mark its process as the source of a flagged chain. */
+interface Hit { f: Finding; seq: number; time: string | null; chainable: boolean }
 
 function maxSeverity(hits: Hit[]): Severity {
   let best: Severity = 'low';
@@ -44,7 +42,7 @@ function finding(rule: Rule, res: MatchResult, imgIndex: number | null, persiste
   return {
     ruleId: rule.id, severity: res.severity ?? rule.severity, title: res.title ?? rule.title,
     explanation: res.explanation ?? rule.explanation, mitre: res.mitre ?? rule.mitre, evidence: res.evidence,
-    imgIndex, persistenceId,
+    imgIndex, persistenceId, trait: rule.trait ?? false,
   };
 }
 
@@ -54,30 +52,16 @@ function lastExecImage(p: Process): Image | undefined {
   return undefined;
 }
 
-/** Apple's own system daemons (smd, backgroundtaskmanagementd) instigate most launch item registrations. */
-const SYSTEM_DIRS = /^\/(?:System|usr\/libexec|usr\/sbin)\//;
-
-/**
- * The process a persistence finding attaches to: the app that registered the item, else the instigator (the XPC
- * caller), else the plist's creator; null means a standalone row. An app or instigator counts only when it is a
- * captured process with a known path and is not an Apple platform binary under /System, /usr/libexec or /usr/sbin:
- * pinning a finding on smd would point at the messenger, and a pathless ghost cannot be told apart from it.
- */
-function persistenceOwner(m: CaptureModel, item: PersistenceItem): ProcId | null {
-  for (const id of [item.app, item.instigator]) {
-    const p = id !== null ? m.processes.get(id) : undefined;
-    const img = p && !p.ghost ? imageAt(p, item.seq) : undefined;
-    if (!img || img.path === null) continue;
-    if (img.isPlatform && SYSTEM_DIRS.test(img.path)) continue;
-    return p!.id;
-  }
-  return item.creator !== null && m.processes.has(item.creator) ? item.creator : null;
-}
-
 export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
   const imageRules = rules.filter(r => r.scope === 'image');
   const processRules = rules.filter(r => r.scope === 'process');
   const itemRules = rules.filter(r => r.scope === 'persistence');
+  // Low-signal findings queue a process only in context: recon and adhoc always, odd-location-exec and keychain-access when low.
+  const gate = new Map(rules.map(r => [r.id, r.gated]));
+  const isGated = (f: Finding): boolean => {
+    const g = gate.get(f.ruleId);
+    return g === 'always' || (g === 'when-low' && f.severity === 'low');
+  };
 
   // 1. Run the rules.
   const hits = new Map<ProcId, Hit[]>();
@@ -91,7 +75,7 @@ export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
       if (img.inherited || img.path === null) return;
       for (const rule of imageRules) {
         const res = rule.match?.({ m, p, img, imgIndex });
-        if (res) add(p.id, { f: finding(rule, res, imgIndex, null), seq: img.seq, time: img.time });
+        if (res) add(p.id, { f: finding(rule, res, imgIndex, null), seq: img.seq, time: img.time, chainable: true });
       }
     });
     // Process-scoped rules run once per process, including one that forked and never exec'd; ghosts have no events.
@@ -99,7 +83,7 @@ export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
     const at = lastExecImage(p) ?? p.images[p.images.length - 1];
     for (const rule of processRules) {
       const res = rule.matchProcess?.(p, m);
-      if (res) add(p.id, { f: finding(rule, res, null, null), seq: at?.seq ?? p.firstSeq, time: at?.time ?? p.startTime });
+      if (res) add(p.id, { f: finding(rule, res, null, null), seq: at?.seq ?? p.firstSeq, time: at?.time ?? p.startTime, chainable: true });
     }
   }
   const queue: QueueItem[] = [];
@@ -107,12 +91,14 @@ export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
     const own: Hit[] = [];
     for (const rule of itemRules) {
       const res = rule.matchItem?.(item, m);
-      if (res) own.push({ f: finding(rule, res, null, item.id), seq: item.seq, time: item.time });
+      if (res) own.push({ f: finding(rule, res, null, item.id), seq: item.seq, time: item.time, chainable: true });
     }
     if (own.length === 0) continue;
     const owner = persistenceOwner(m, item);
     if (owner !== null) {
-      for (const h of own) add(owner, h);
+      // Attached to the registering app or the instigator, only a high finding marks a chain: an ordinary app that
+      // registers a login item would otherwise drag everything it ever launched into the queue.
+      for (const h of own) add(owner.id, { ...h, chainable: owner.via === 'creator' || h.f.severity === 'high' });
     } else {
       queue.push({
         key: `i:${item.id}`, kind: 'persistence', procId: null, persistenceId: item.id,
@@ -128,7 +114,7 @@ export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
     for (const h of list) {
       if (isGated(h.f)) continue;
       flagged.add(id);
-      if (h.f.severity !== 'low') chainSources.add(id);
+      if (h.f.severity !== 'low' && h.chainable) chainSources.add(id);
     }
   }
   const inChain = (id: ProcId): boolean => ancestry(m, id, 'original').some(a => chainSources.has(a));

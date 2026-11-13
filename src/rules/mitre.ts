@@ -1,8 +1,8 @@
 /** Technique names for the MITRE ATT&CK IDs the rules cite, so the learner sees a word next to the number. */
 export const MITRE_NAMES: Record<string, string> = {
   'T1016': 'System Network Configuration Discovery',
+  'T1016.002': 'Wi-Fi Discovery',
   'T1033': 'System Owner/User Discovery',
-  'T1036': 'Masquerading',
   'T1036.009': 'Break Process Trees',
   'T1056.002': 'GUI Input Capture',
   'T1057': 'Process Discovery',
@@ -21,6 +21,8 @@ export const MITRE_NAMES: Record<string, string> = {
   'T1547.015': 'Login Items',
   'T1553.001': 'Gatekeeper Bypass',
   'T1555.001': 'Keychain',
+  'T1557': 'Adversary-in-the-Middle',
   'T1560.001': 'Archive via Utility',
+  'T1562.001': 'Disable or Modify Tools',
   'T1569.001': 'Launchctl',
 };

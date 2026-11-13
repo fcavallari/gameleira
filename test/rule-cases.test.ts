@@ -4,7 +4,7 @@ import { MITRE_NAMES } from '../src/rules/mitre';
 import { RULES } from '../src/rules/rules';
 import type { FixtureName } from './fixtures';
 import { queued } from './helpers';
-import { apple, capture, img, persistenceItem, proc } from './synth';
+import { apple, capture, img, op, persistenceItem, proc } from './synth';
 
 const FIXTURES: FixtureName[] = ['es-lab.jsonl', 'atomic_stealer.json', 'rustbucket.json', 'shlayer.json', 'spritetree_demo.json'];
 
@@ -14,9 +14,10 @@ function allFindings(a: ReturnType<typeof analyze>): Finding[] {
 }
 
 describe('MITRE names', () => {
-  test('every MITRE ID a rule can cite has a name', () => {
+  test('every MITRE ID a rule can cite has a name; only trait rules cite none', () => {
     for (const r of RULES) {
-      expect(r.mitre.length, r.id).toBeGreaterThan(0);
+      if (r.trait) expect(r.mitre, r.id).toEqual([]);
+      else expect(r.mitre.length, r.id).toBeGreaterThan(0);
       for (const id of r.mitre) expect(MITRE_NAMES[id], `${r.id} ${id}`).toBeTruthy();
     }
   });
@@ -33,12 +34,16 @@ describe('MITRE names', () => {
 describe('MITRE fit', () => {
   const mitreOf = (id: string) => RULES.find(r => r.id === id)!.mitre;
   test('orphaned is Break Process Trees', () => expect(mitreOf('orphaned')).toEqual(['T1036.009']));
-  test('unsigned and adhoc are Masquerading, explained as a trait', () => {
+  test('unsigned and adhoc are traits with no technique, and say so', () => {
     for (const id of ['unsigned', 'adhoc']) {
       const r = RULES.find(x => x.id === id)!;
-      expect(r.mitre).toEqual(['T1036']);
+      expect(r.trait).toBe(true);
+      expect(r.mitre).toEqual([]);
       expect(r.explanation).toMatch(/not a technique by itself/);
     }
+    const f = analyze(capture([proc('100:1', [img({ path: '/opt/x/tool', signingId: null })])])).queue[0]!.findings.find(x => x.ruleId === 'unsigned')!;
+    expect(f.trait).toBe(true);
+    expect(f.mitre).toEqual([]);
   });
   test('dscl -authonly is GUI Input Capture only', () => {
     const r = RULES.find(x => x.id === 'dscl-authonly')!;
@@ -225,22 +230,40 @@ describe('process-scoped rules see processes that fork and never exec', () => {
 
 describe('keychain access and recon by technique', () => {
   const run = (path: string, args: string[]) => analyze(capture([proc('100:1', [apple(path, args)])]));
-  test('security reading or exporting keychain items is high T1555.001', () => {
-    for (const args of [['security', 'find-generic-password', '-ga', 'Chrome'], ['security', 'find-internet-password', '-s', 'x'],
-      ['security', 'dump-keychain', '-d'], ['security', 'export', '-k', 'login.keychain'], ['security', '-q', 'unlock-keychain', '-p', 'pw']]) {
-      const q = run('/usr/bin/security', args).queue[0];
-      expect(q?.severity, args.join(' ')).toBe('high');
-      const f = q!.findings.find(x => x.ruleId === 'keychain-access')!;
-      expect(f.mitre).toEqual(['T1555.001']);
-      expect(f.explanation).toContain(`security ${args.find(a => !a.startsWith('-') && a !== 'security')}`);
+  const kc = (args: string[]) => allFindings(run('/usr/bin/security', ['security', ...args])).find(x => x.ruleId === 'keychain-access');
+  test('high: printing a browser Safe Storage key or a wallet entry, or dump-keychain -d', () => {
+    for (const args of [['find-generic-password', '-ga', 'Chrome'], ['find-generic-password', '-w', '-s', 'Chrome Safe Storage'],
+      ['find-generic-password', '-wa', 'Microsoft Edge'], ['find-generic-password', '-g', '-s', 'Brave Safe Storage'],
+      ['find-internet-password', '-w', '-s', 'exodus.com'], ['find-generic-password', '-w', '-l', 'MetaMask vault'],
+      ['dump-keychain', '-d']]) {
+      const f = kc(args);
+      expect(f?.severity, args.join(' ')).toBe('high');
+      expect(f?.mitre).toEqual(['T1555.001']);
     }
+    expect(kc(['find-generic-password', '-ga', 'Chrome'])!.explanation).toMatch(/Safe Storage/);
+    expect(kc(['find-generic-password', '-wa', 'Exodus'])!.explanation).toMatch(/wallet/);
+    expect(kc(['dump-keychain', '-d'])!.explanation).toMatch(/every item/);
+  });
+  test('med: printing any other saved password', () => {
+    const f = kc(['find-internet-password', '-s', 'github.com', '-w'])!;
+    expect(f.severity).toBe('med');
+    expect(f.explanation).toMatch(/prints a saved password/);
+  });
+  test('low and context-only: attribute lookups, unlock, export, dump without -d', () => {
+    for (const args of [['find-generic-password', '-s', 'Chrome Safe Storage'], ['unlock-keychain', '-p', 'pw'],
+      ['export', '-k', 'login.keychain'], ['dump-keychain'], ['-q', 'unlock-keychain']]) {
+      const a = run('/usr/bin/security', ['security', ...args]);
+      expect(a.queue, args.join(' ')).toHaveLength(0);
+      expect(a.contextOnly.get('100:1')?.find(x => x.ruleId === 'keychain-access')?.severity, args.join(' ')).toBe('low');
+    }
+    expect(kc(['find-generic-password', '-s', 'x'])!.explanation).toMatch(/not its secret/);
   });
   test('other security subcommands are not keychain access, and security is no longer recon', () => {
     const a = run('/usr/bin/security', ['security', 'find-certificate', '-c', 'export']);
     expect(allFindings(a).map(f => f.ruleId)).toEqual([]);
   });
   test('recon cites the technique of the tool that ran', () => {
-    const cases: [string, string][] = [['ps', 'T1057'], ['networksetup', 'T1016'], ['scutil', 'T1016'], ['airport', 'T1016'],
+    const cases: [string, string][] = [['ps', 'T1057'], ['networksetup', 'T1016'], ['scutil', 'T1016'], ['airport', 'T1016.002'],
       ['csrutil', 'T1518.001'], ['spctl', 'T1518.001'], ['whoami', 'T1033'], ['id', 'T1033'], ['system_profiler', 'T1082'],
       ['sw_vers', 'T1082'], ['sysctl', 'T1082'], ['ioreg', 'T1082'], ['uname', 'T1082'], ['hostname', 'T1082']];
     for (const [tool, id] of cases) {
@@ -419,7 +442,7 @@ describe('review follow-ups', () => {
     expect(f.evidence).not.toMatch(/plist/);
     expect(f.evidence).toMatch(/^item \/Users\/Shared\/Evil\.app/);
     expect(f.severity).toBe('high');
-    expect(f.evidence).toMatch(/high: the app is in the shared folder/);
+    expect(f.evidence).toMatch(/high: the app is in \/Users\/Shared, which every user can write to/);
   });
   test('a relative executable path is resolved against the app', () => {
     const f = itemFinding({ itemType: 2, appPath: '/private/tmp/X.app/', executablePath: 'Contents/MacOS/X' });
@@ -466,5 +489,224 @@ describe('review follow-ups', () => {
     expect(f.mitre).toEqual(['T1059.007']);
     expect(f.explanation).toMatch(/JavaScript/);
     expect(f.explanation).not.toMatch(/AppleScript/);
+  });
+});
+
+describe('fix round 1', () => {
+  const findingsOf = (path: string, args: string[], o: Parameters<typeof apple>[2] = {}) =>
+    allFindings(analyze(capture([proc('100:1', [apple(path, args, o)])])));
+  const ruleIds = (path: string, args: string[], o: Parameters<typeof apple>[2] = {}) => findingsOf(path, args, o).map(f => f.ruleId);
+
+  describe('shell-from-pipe ignores version and help probes', () => {
+    const piped = { stdinIsPipe: true };
+    const fires = (path: string, args: string[]) => ruleIds(path, args, piped).includes('shell-from-pipe');
+    test('probes', () => {
+      for (const [path, args] of [['/usr/bin/python3', ['python3', '--version']], ['/usr/bin/python3', ['python3', '-V']],
+        ['/bin/bash', ['bash', '--version']], ['/bin/bash', ['bash', '--help']], ['/bin/zsh', ['zsh', '--version']],
+        ['/usr/bin/perl', ['perl', '-v']], ['/usr/bin/ruby', ['ruby', '-v']], ['/usr/bin/ruby', ['ruby', '--version']],
+        ['/usr/bin/python3', ['python3', '-h']]] as [string, string[]][])
+        expect(fires(path, args), args.join(' ')).toBe(false);
+    });
+    test('unknown long options do not make it fire', () => {
+      expect(fires('/usr/bin/python3', ['python3', '--something'])).toBe(false);
+      expect(fires('/usr/bin/ruby', ['ruby', '--yjit'])).toBe(false);
+    });
+    test('bash --rcfile f reads no script from f; known long options still allow a pipe', () => {
+      expect(fires('/bin/bash', ['bash', '--rcfile', 'f'])).toBe(true);
+      expect(fires('/bin/bash', ['bash', '--norc', '--noprofile'])).toBe(true);
+      expect(fires('/bin/bash', ['bash', '--rcfile', 'f', 'script.sh'])).toBe(false);
+    });
+  });
+
+  describe('download parses short-flag clusters', () => {
+    const curl = (...a: string[]) => ruleIds('/usr/bin/curl', ['curl', ...a]).includes('download');
+    const wget = (...a: string[]) => ruleIds('/usr/local/bin/wget', ['wget', ...a]).includes('download');
+    test('curl -XPOST and -XOPTIONS are a method, not -O', () => {
+      expect(curl('-XPOST', 'https://example.com/api')).toBe(false);
+      expect(curl('-XOPTIONS', 'https://example.com/')).toBe(false);
+      expect(curl('-H', 'X-Opt: O', 'https://example.com/')).toBe(false);
+    });
+    test('curl -sLo f and -LO write files', () => {
+      expect(curl('-sLo', 'f', 'https://example.com/x')).toBe(true);
+      expect(curl('-LO', 'https://example.com/x')).toBe(true);
+      expect(curl('-f0L', '-o', '/tmp/x', 'http://example.com/x')).toBe(true);
+    });
+    test('wget needs a URL; --version and --help are not downloads', () => {
+      expect(wget('--version')).toBe(false);
+      expect(wget('--help')).toBe(false);
+      expect(wget('-V')).toBe(false);
+      expect(wget('example.com/file.zip')).toBe(true);
+      expect(wget('-q', 'https://example.com/x')).toBe(true);
+      expect(wget('-i', 'urls.txt')).toBe(true);
+      expect(wget('-U', 'Mozilla/5.0', '-qO-', 'https://example.com/x')).toBe(false);
+    });
+  });
+
+  describe('security setting changes', () => {
+    const f = (path: string, args: string[]) => findingsOf(path, args);
+    test('spctl turning Gatekeeper off is high T1562.001', () => {
+      for (const flag of ['--master-disable', '--global-disable', '--disable']) {
+        const x = f('/usr/sbin/spctl', ['spctl', flag]).find(y => y.ruleId === 'security-setting-change')!;
+        expect(x.severity, flag).toBe('high');
+        expect(x.mitre).toEqual(['T1562.001']);
+        expect(x.explanation).toMatch(/Gatekeeper/);
+        expect(f('/usr/sbin/spctl', ['spctl', flag]).some(y => y.ruleId === 'recon'), flag).toBe(false);
+      }
+    });
+    test('spctl --add is a Gatekeeper exception, high T1553.001', () => {
+      const x = f('/usr/sbin/spctl', ['spctl', '--add', '/Applications/X.app']).find(y => y.ruleId === 'security-setting-change')!;
+      expect(x.severity).toBe('high');
+      expect(x.mitre).toEqual(['T1553.001']);
+    });
+    test('networksetup changing the proxy or DNS is med T1557', () => {
+      for (const flag of ['-setwebproxy', '-setsecurewebproxy', '-setautoproxyurl', '-setsocksfirewallproxy', '-setdnsservers']) {
+        const fs = f('/usr/sbin/networksetup', ['networksetup', flag, 'Wi-Fi', '127.0.0.1', '8080']);
+        const x = fs.find(y => y.ruleId === 'security-setting-change')!;
+        expect(x.severity, flag).toBe('med');
+        expect(x.mitre).toEqual(['T1557']);
+        expect(x.explanation).toMatch(/adware/);
+        expect(fs.some(y => y.ruleId === 'recon'), flag).toBe(false);
+      }
+    });
+    test('reading settings is still recon', () => {
+      expect(f('/usr/sbin/spctl', ['spctl', '--status']).map(y => y.ruleId)).toEqual(['recon']);
+      expect(f('/usr/sbin/networksetup', ['networksetup', '-getwebproxy', 'Wi-Fi']).map(y => y.ruleId)).toEqual(['recon']);
+    });
+    test('scutil --get is system information; sysctl -w is not recon', () => {
+      expect(f('/usr/sbin/scutil', ['scutil', '--get', 'ComputerName']).find(y => y.ruleId === 'recon')!.mitre).toEqual(['T1082']);
+      expect(f('/usr/sbin/scutil', ['scutil', '--dns']).find(y => y.ruleId === 'recon')!.mitre).toEqual(['T1016']);
+      expect(f('/usr/sbin/sysctl', ['sysctl', '-w', 'kern.x=1'])).toEqual([]);
+      expect(f('/usr/sbin/sysctl', ['sysctl', '-n', 'hw.model']).map(y => y.ruleId)).toEqual(['recon']);
+    });
+  });
+
+  test('persistence reasons are worded for persistence, not for developer tools', () => {
+    const r = analyze(capture([], [persistenceItem({ itemType: 3, plistPath: '/Users/u/Library/LaunchAgents/x.plist', executablePath: '/Users/u/.local/bin/agent' })]))
+      .queue[0]!.findings[0]!;
+    expect(r.severity).toBe('high');
+    expect(r.evidence).toMatch(/high: the program is in a dot-folder in the home folder, which the user can write to/);
+    expect(r.evidence).not.toMatch(/developer tools/);
+  });
+
+  describe('a registration attributed to the app', () => {
+    const evil = proc('900:1', [img({ path: '/Applications/Evil.app/Contents/MacOS/Evil', signingId: 'evil', teamId: 'T', seq: 1 })]);
+    // whoami has only a gated recon finding, so it is queued only as part of a flagged chain.
+    const child = proc('901:1', [apple('/usr/bin/whoami', ['whoami'], { seq: 5 })], { originalParent: '900:1', firstSeq: 5 });
+    const cp = proc('902:1', [apple('/bin/cp', ['cp', 'a', 'b'], { seq: 3 })]);
+    cp.fileOps.push({ kind: 'create', path: '/Library/LaunchAgents/com.evil.plist', time: 't', seq: 4 });
+    const run = (exe: string) => analyze(capture([evil, child, cp], [persistenceItem({
+      itemType: 3, plistPath: '/Library/LaunchAgents/com.evil.plist', executablePath: exe, app: '900:1', creator: '902:1',
+    })]));
+    test('a med finding on the app does not make its children a chain', () => {
+      const a = run('/Applications/Evil.app/Contents/MacOS/Evil');
+      expect(a.queue.find(q => q.procId === '900:1')!.severity).toBe('med');
+      expect(a.queue.some(q => q.procId === '901:1')).toBe(false);
+    });
+    test('a high one does', () => {
+      const a = run('/Users/Shared/evil');
+      expect(a.queue.find(q => q.procId === '900:1')!.severity).toBe('high');
+      expect(a.queue.find(q => q.procId === '901:1')?.inFlaggedChain).toBe(true);
+    });
+    test('the plist writer still gets persistence-plist, saying where the registration went', () => {
+      const f = run('/Applications/Evil.app/Contents/MacOS/Evil').queue.find(q => q.procId === '902:1')!.findings.find(x => x.ruleId === 'persistence-plist')!;
+      expect(f.explanation).toMatch(/attributed to Evil/);
+      expect(f.explanation).not.toMatch(/No registration event/);
+    });
+  });
+
+  describe('launch dirs and plists', () => {
+    const writer = (...ops: ReturnType<typeof op>[]) => {
+      const p = proc('100:1', [apple('/bin/cp', ['cp'])]);
+      p.fileOps.push(...ops);
+      return allFindings(analyze(capture([p]))).find(f => f.ruleId === 'persistence-plist');
+    };
+    test('only .plist files count; a temp file renamed over a plist counts through the rename', () => {
+      expect(writer(op('create', '/Users/u/Library/LaunchAgents/.DS_Store'))).toBeUndefined();
+      expect(writer(op('create', '/Users/u/Library/LaunchAgents/x.plist.tmp'))).toBeUndefined();
+      expect(writer(op('create', '/Users/u/Library/LaunchAgents/x.plist.tmp'), op('rename', '/Users/u/Library/LaunchAgents/x.plist.tmp', 3, '/Users/u/Library/LaunchAgents/x.plist'))?.evidence)
+        .toMatch(/x\.plist$/);
+    });
+    test('explanations say RunAtLoad/KeepAlive, and /Library/LaunchAgents is every user', () => {
+      const f = analyze(capture([], [persistenceItem({ itemType: 3, plistPath: '/Library/LaunchAgents/x.plist', executablePath: '/Applications/X.app/Contents/MacOS/X' })])).queue[0]!.findings[0]!;
+      expect(f.explanation).toMatch(/every user/);
+      expect(f.explanation).toMatch(/RunAtLoad\/KeepAlive/);
+    });
+  });
+
+  describe('persistence wording', () => {
+    const ev = (exe: string, images: ReturnType<typeof img>[] = []) =>
+      analyze(capture(images.map((i, n) => proc(`${600 + n}:1`, [i])), [persistenceItem({ itemType: 3, executablePath: exe })])).queue
+        .flatMap(q => q.findings).find(f => f.ruleId === 'persistence-item')!.evidence;
+    test('fallthrough names a system or package-manager location', () =>
+      expect(ev('/opt/homebrew/bin/thing')).toMatch(/med: the program is in a system, \/Applications or package-manager location/));
+    test('an app bundle in home seen signed without a team says so', () => {
+      const exe = '/Users/u/Applications/T.app/Contents/MacOS/T';
+      expect(ev(exe, [img({ path: exe, signingId: 'com.x.t', teamId: null })])).toMatch(/med: an app bundle in a home folder; it ran signed without a team ID/);
+      expect(ev(exe)).toMatch(/signature was not seen in this capture/);
+    });
+  });
+
+  test('payload-decode ignores openssl digest commands, where -d is debug', () => {
+    for (const sub of ['dgst', 'sha1', 'sha256', 'sha512', 'md5'])
+      expect(ruleIds('/usr/bin/openssl', ['openssl', sub, '-d', 'f']), sub).not.toContain('payload-decode');
+  });
+
+  test('osascript -l is read from osascript\'s own options only', () => {
+    const f = findingsOf('/usr/bin/osascript', ['osascript', '/tmp/x.scpt', '-l', 'JavaScript']).find(x => x.ruleId === 'osascript-script')!;
+    expect(f.mitre).toEqual(['T1059.002']);
+  });
+
+  test('fake-prompt and osascript-script wording', () => {
+    const fp = RULES.find(r => r.id === 'fake-prompt')!;
+    expect(fp.explanation).toMatch(/AppleScript/);
+    expect(fp.explanation).toMatch(/JavaScript/);
+    const os = RULES.find(r => r.id === 'osascript-script')!;
+    expect(os.explanation).toMatch(/volume/);
+    expect(os.explanation).toMatch(/translocated/);
+  });
+
+  describe('archive-staging', () => {
+    const sev = (args: string[], cwd: string) =>
+      findingsOf(`/usr/bin/${args[0]}`, args, { cwd }).find(f => f.ruleId === 'archive-staging')!.severity;
+    test('zip -X takes no value', () => expect(sev(['zip', '-X', '/tmp/out.zip', 'a'], '/Users/u')).toBe('high'));
+    test('a build dir under /var/folders/…/T does not make relative args high', () =>
+      expect(sev(['zip', '-r', 'out.zip', 'pkg'], '/private/var/folders/ab/cd/T/go-build123/b001')).toBe('med'));
+    test('an ordinary /tmp working dir still does', () => expect(sev(['zip', '-r', 'out.zip', 'loot'], '/tmp/w')).toBe('high'));
+  });
+
+  test('go test binaries in /var/folders/…/T/go-build are not high', () => {
+    const a = analyze(capture([proc('100:1', [img({ path: '/private/var/folders/ab/cd/T/go-build123/b001/pkg.test', signingId: 'pkg.test', csFlags: 0x2 })])]));
+    expect(a.queue).toHaveLength(0);
+    expect(a.contextOnly.get('100:1')?.find(f => f.ruleId === 'odd-location-exec')?.severity).toBe('low');
+  });
+
+  describe('recon window and burst flag', () => {
+    const at = (ms: number) => new Date(Date.UTC(2026, 10, 12) + ms).toISOString();
+    const parent = proc('1:1', [apple('/bin/zsh', ['zsh'])]);
+    const tool = (n: number, name: string, ms: number) =>
+      proc(`${300 + n}:1`, [apple(`/usr/bin/${name}`, [name], { time: at(ms), seq: 10 + n })], { originalParent: '1:1', originalPpid: 1 });
+    test('the 60 s window is inclusive', () => {
+      expect(analyze(capture([parent, tool(0, 'whoami', 0), tool(1, 'sw_vers', 30_000), tool(2, 'hostname', 60_000)])).queue).toHaveLength(3);
+      expect(analyze(capture([parent, tool(0, 'whoami', 0), tool(1, 'sw_vers', 30_000), tool(2, 'hostname', 60_001)])).queue).toHaveLength(0);
+    });
+    test('a row queued for its own finding, or for a chain, is not a burst', () => {
+      const curl = proc('400:1', [apple('/usr/bin/curl', ['curl', '-o', '/tmp/x', 'https://e.com/x'], { seq: 2 })], { originalParent: '1:1' });
+      const who = proc('401:1', [apple('/usr/bin/whoami', ['whoami'], { seq: 3 })], { originalParent: '400:1' });
+      const a = analyze(capture([parent, curl, who]));
+      expect(a.queue.map(q => [q.procId, q.reconBurst])).toEqual(expect.arrayContaining([['400:1', false], ['401:1', false]]));
+      expect(a.queue.find(q => q.procId === '401:1')!.inFlaggedChain).toBe(true);
+    });
+  });
+
+  describe('attachment edge cases', () => {
+    const cat = proc('902:1', [apple('/bin/cat', ['cat'])]);
+    const owner = (inst: ReturnType<typeof proc>) => {
+      const a = analyze(capture([inst, cat], [persistenceItem({ itemType: 3, instigator: inst.id, creator: '902:1', executablePath: '/Applications/X.app/Contents/MacOS/X' })]));
+      return a.queue.find(q => q.findings.some(f => f.ruleId === 'persistence-item'))!.procId;
+    };
+    test('an Apple platform binary outside /System, /usr/libexec, /usr/sbin is attached to', () =>
+      expect(owner(proc('903:1', [apple('/bin/launchctl', ['launchctl', 'load', 'x'])]))).toBe('903:1'));
+    test('a non-platform binary under /Library is attached to', () =>
+      expect(owner(proc('904:1', [img({ path: '/Library/Application Support/X/helper', signingId: 'x', teamId: 'T' })]))).toBe('904:1'));
   });
 });

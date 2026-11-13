@@ -1,5 +1,10 @@
-import type { CaptureModel, Image, PersistenceItem, Process } from '../model/types';
+import type { CaptureModel, Image, PersistenceItem, ProcId, Process } from '../model/types';
 import { basename, imageAt, normPath } from '../model/util';
+import {
+  CURL_SPEC, hasOpt, hasShortFlag, looksLikeUrl, optValues, osascriptArgs, parseOpts, PIPE_LANGS, readsStdin,
+  SECURITY_FIND_SPEC, securityArgs, stagingPlace, tarCreates, WGET_SPEC, type PipeLang,
+} from './args';
+import { HOME, LOCATION_WORDS, oddLocation, resolvePath, type LocationKind, type OddLocation } from './locations';
 
 export type Severity = 'high' | 'med' | 'low';
 export const SEVERITY_RANK: Record<Severity, number> = { high: 3, med: 2, low: 1 };
@@ -8,8 +13,12 @@ export interface RuleCtx { m: CaptureModel; p: Process; img: Image; imgIndex: nu
 export interface MatchResult { evidence: string; severity?: Severity; mitre?: string[]; title?: string; explanation?: string }
 export interface Rule {
   id: string; title: string; severity: Severity; explanation: string;
-  /** Every MITRE ID the rule can cite; a finding cites the subset its trigger fits. */
+  /** Every MITRE ID the rule can cite; a finding cites the subset its trigger fits. Empty only for a trait rule. */
   mitre: string[];
+  /** A trait of the binary (unsigned, ad-hoc) rather than a technique: it cites no MITRE ID. */
+  trait?: boolean;
+  /** Context-only unless the process is in a flagged chain (or a recon burst): always, or only for low findings. */
+  gated?: 'always' | 'when-low';
   /** 'image' runs on every exec'd image; 'process' once per captured process, exec'd or fork-only; 'persistence' per launch item. */
   scope: 'image' | 'process' | 'persistence';
   match?(ctx: RuleCtx): MatchResult | null;                                  // scope 'image'
@@ -24,267 +33,7 @@ const SHELL_NAMES = new Set([...SHELLS].map(basename));
 /** Script interpreters, versioned names included (python3.11, perl5.30). */
 const INTERPRETER = /^(?:python[0-9.]*|perl[0-9.]*|ruby[0-9.]*|osascript|node|php)$/;
 
-/** Discovery tools, each with the technique it fits and what it finds out. */
-const RECON_KINDS: Record<string, { mitre: string; what: string }> = {
-  process: { mitre: 'T1057', what: 'Lists the running processes.' },
-  network: { mitre: 'T1016', what: 'Reads the network configuration (interfaces, Wi-Fi, DNS, proxies).' },
-  security: { mitre: 'T1518.001', what: 'Checks the security settings (System Integrity Protection, Gatekeeper).' },
-  user: { mitre: 'T1033', what: 'Finds out which user it is running as.' },
-  system: { mitre: 'T1082', what: 'Gathers information about the machine (hardware, macOS version, name).' },
-};
-export const RECON_TOOLS: Map<string, keyof typeof RECON_KINDS> = new Map([
-  ['ps', 'process'], ['networksetup', 'network'], ['scutil', 'network'], ['airport', 'network'],
-  ['csrutil', 'security'], ['spctl', 'security'], ['whoami', 'user'], ['id', 'user'],
-  ['system_profiler', 'system'], ['sw_vers', 'system'], ['sysctl', 'system'], ['ioreg', 'system'], ['uname', 'system'], ['hostname', 'system'],
-]);
-const RECON_TAIL = ' Attackers do this to size up a machine, but so does plenty of normal software, so on its own it is only context.';
-
-/** `security` subcommands that read secrets out of a keychain, or open one up for reading. */
-const KEYCHAIN_ACTIONS: Record<string, string> = {
-  'find-generic-password': 'looks up a saved password item (with -w or -g it prints the password)',
-  'find-internet-password': 'looks up a saved website or server password (with -w or -g it prints the password)',
-  'dump-keychain': 'lists every item in a keychain (with -d it includes the secrets)',
-  'export': 'exports keys or certificates out of a keychain',
-  'unlock-keychain': 'unlocks a keychain with its password, so its items can be read',
-};
-/** The `security` subcommand: the first argument that is not an option (`-p` takes a prompt as its value). */
-function securitySubcommand(args: string[]): string | undefined {
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '-p') { i++; continue; }
-    if (!args[i]!.startsWith('-')) return args[i];
-  }
-  return undefined;
-}
-
-/**
- * Where an odd location is. Strong kinds are places a normal install never runs from: temporary folders, Downloads,
- * /Users/Shared, mounted volumes, App Translocation, and a hidden folder buried below a visible one under home.
- * Weak kinds are where developer tools live: a dot-folder directly under home (~/.cargo, ~/.local), or a hidden
- * folder inside a project tooling or build folder (.git/hooks, node_modules/.bin, .build, .terraform).
- */
-export type LocationKind = 'translocated' | 'temp' | 'shared' | 'downloads' | 'volume' | 'hidden' | 'home-dot' | 'tooling';
-export interface OddLocation { strength: 'strong' | 'weak'; kind: LocationKind }
-
-/** How each kind reads in an explanation ("Ran a program from …") and, shorter, in evidence. */
-export const LOCATION_WORDS: Record<LocationKind, { long: string; short: string }> = {
-  translocated: { long: 'a translocated app (macOS ran a quarantined download from a random read-only copy)', short: 'App Translocation' },
-  temp: { long: 'a temporary folder', short: 'temporary folder' },
-  shared: { long: 'the shared folder /Users/Shared, which every user can write to', short: '/Users/Shared' },
-  downloads: { long: 'the Downloads folder', short: 'Downloads' },
-  volume: { long: 'a mounted disk image or external volume (/Volumes)', short: '/Volumes' },
-  hidden: { long: 'a hidden folder inside a visible one', short: 'hidden folder' },
-  'home-dot': { long: 'a dot-folder in the home folder, where developer tools usually live', short: 'home dot-folder' },
-  tooling: { long: 'a hidden folder inside a project tooling or build folder, where developer tools usually live', short: 'developer tooling folder' },
-};
-
-const STRONG_LOCATIONS: [RegExp, LocationKind][] = [
-  [/\/AppTranslocation\//i, 'translocated'],
-  [/^\/(?:tmp|var\/tmp|var\/folders)\//i, 'temp'],
-  [/^\/Users\/Shared\//i, 'shared'],
-  [/^\/Users\/[^/]+\/Downloads\//i, 'downloads'],
-  [/^\/Volumes\//i, 'volume'],
-];
-const HOME = /^\/Users\/[^/]+\//i;
-/** Project tooling and build folders (hooks, virtualenvs, package installs, build output), compared lower-case. */
-const TOOLING_DIRS = new Set([
-  '.git', '.venv', 'venv', '.tox', '.direnv', '.husky', 'node_modules', '.pnpm-store',
-  '.build', '.terraform', '.next', '.cargo', '.gradle', '.m2', '.cache', '.npm', '.yarn', 'target', 'deriveddata',
-]);
-
-/** The temporary, shared, download, volume or translocation place a path is in, if any. */
-function strongPlace(p: string): OddLocation | null {
-  for (const [re, kind] of STRONG_LOCATIONS) if (re.test(p)) return { strength: 'strong', kind };
-  return null;
-}
-
-export function oddLocation(path: string): OddLocation | null {
-  const p = normPath(path);
-  const strong = strongPlace(p);
-  if (strong !== null) return strong;
-  const home = HOME.exec(p);
-  if (!home) return null;
-  // Walk the folders below home, top down. A tooling folder only softens hidden folders found below it, so
-  // ~/Desktop/.hidden/node_modules/x is still strong: the buried hidden folder comes first.
-  const dirs = p.slice(home[0].length).split('/').slice(0, -1);
-  let inTooling = false;
-  for (let i = 0; i < dirs.length; i++) {
-    const seg = dirs[i]!;
-    const tooling = TOOLING_DIRS.has(seg.toLowerCase());
-    if (seg.startsWith('.')) {
-      if (i === 0) return { strength: 'weak', kind: 'home-dot' };
-      return inTooling || tooling ? { strength: 'weak', kind: 'tooling' } : { strength: 'strong', kind: 'hidden' };
-    }
-    if (tooling) inTooling = true;
-  }
-  return null;
-}
-
-/** `-x`, or a short-option cluster such as `-cr` containing x; `--long` options never match. */
-export function hasShortFlag(args: string[], letter: string): boolean {
-  return args.some(a => a === `-${letter}` || (/^-[A-Za-z]+$/.test(a) && a.includes(letter)));
-}
-
-/** Output targets that are not a file on disk: curl's `-o /dev/null` and `-o -` (stdout). */
-const NOT_A_FILE = new Set(['/dev/null', '-']);
-
-/**
- * Values given to an option: `-x v`, `-xv`, a short cluster ending in x (`-sLo v`, `-qO-`), `--long v` or `--long=v`.
- * undefined when the value is missing.
- */
-function optionValues(a: string[], letter: string, longs: string[]): (string | undefined)[] {
-  const out: (string | undefined)[] = [];
-  for (let i = 0; i < a.length; i++) {
-    const x = a[i]!;
-    const long = longs.find(l => x === l || x.startsWith(`${l}=`));
-    if (long !== undefined) {
-      out.push(x === long ? a[++i] : x.slice(long.length + 1));
-      continue;
-    }
-    if (x.startsWith('--') || !x.startsWith('-')) continue;
-    const k = x.indexOf(letter);
-    if (k > 0 && /^[A-Za-z]*$/.test(x.slice(1, k))) {
-      const attached = x.slice(k + 1);
-      out.push(attached !== '' ? attached : a[++i]);
-    }
-  }
-  return out;
-}
-const isFileTarget = (t: string | undefined): boolean => t !== undefined && !NOT_A_FILE.has(t);
-
-/** Interpreters that read a script from stdin when given none, and the flags that mean the code is somewhere else. */
-interface PipeLang { mitre: string; inline: string; stdinFlag: string; valueOpts: string[]; attached: string }
-const PIPE_LANGS: [(n: string) => boolean, PipeLang][] = [
-  // -c: the command is an argument; -s: read commands from stdin (the rest are positional parameters); -o/+o take an option name.
-  [n => SHELL_NAMES.has(n), { mitre: 'T1059.004', inline: 'c', stdinFlag: 's', valueOpts: ['-o', '+o'], attached: '' }],
-  // -c code, -m module; -W and -X take a value.
-  [n => /^python[0-9.]*$/.test(n), { mitre: 'T1059.006', inline: 'cm', stdinFlag: '', valueOpts: ['-W', '-X'], attached: 'WX' }],
-  // -e/-E code (also in clusters such as -ne, -0777pe); -I, -M, -m, -x, -d carry their value attached.
-  [n => /^perl[0-9.]*$/.test(n), { mitre: 'T1059', inline: 'eE', stdinFlag: '', valueOpts: [], attached: 'IMmxd' }],
-  // -e code; -I, -r, -C, -E take a value.
-  [n => /^ruby[0-9.]*$/.test(n), { mitre: 'T1059', inline: 'e', stdinFlag: '', valueOpts: ['-I', '-r', '-C', '-E'], attached: 'IrCE' }],
-];
-
-/** The interpreter's language when it reads its program from stdin: no inline code, and no script file argument (or `-`). */
-function pipeLang(img: Image): PipeLang | null {
-  if (img.stdinIsPipe !== true || img.script !== null || !img.args) return null;
-  const lang = PIPE_LANGS.find(([is]) => is(basename(img.path)))?.[1];
-  if (!lang) return null;
-  const a = img.args;
-  for (let i = 1; i < a.length; i++) {
-    const x = a[i]!;
-    if (x === '-') return lang;
-    if (x === '--') return a[i + 1] === undefined ? lang : null;
-    if (x.startsWith('--')) continue;                                   // long option
-    if (x.length > 1 && (x.startsWith('-') || (lang.stdinFlag !== '' && x.startsWith('+')))) {
-      if (lang.valueOpts.includes(x)) { i++; continue; }
-      if (lang.attached.includes(x[1]!)) continue;
-      const letters = x.slice(1);
-      if ([...letters].some(ch => lang.inline.includes(ch))) return null;
-      if (lang.stdinFlag !== '' && letters.includes(lang.stdinFlag)) return lang;
-      continue;
-    }
-    return null;                                                       // a script file
-  }
-  return lang;
-}
-
-/** tar is in create mode: `--create`, a short cluster with c (`-czf`), or a bundled first arg (`czf`). */
-function tarCreates(a: string[]): boolean {
-  return a.some(x => x === '--create' || /^-[A-Za-z]*c[A-Za-z]*$/.test(x)) || /^[A-Za-z]*c[A-Za-z]*$/.test(a[0] ?? '');
-}
-
-/**
- * Where an archiver stages its files: a strong odd location (temporary, Downloads, /Users/Shared, /Volumes,
- * translocated, a buried hidden folder) named by an argument. Absolute paths are taken from plain args, `--opt=/path`
- * and attached `-C/path`; a relative arg counts only when the working directory is itself a strong place (a hidden
- * project folder such as `.github` is not staging). Exclude/include patterns (`zip -x/-i …`, `tar --exclude`) are skipped.
- */
-function stagingPlace(a: string[], cwd: string | null): OddLocation | null {
-  const paths: string[] = [];
-  for (let i = 0; i < a.length; i++) {
-    const x = a[i]!;
-    if (x === '-x' || x === '-i') {                            // zip: a list of patterns up to the next option
-      while (i + 1 < a.length && !a[i + 1]!.startsWith('-')) i++;
-      continue;
-    }
-    if (x === '--exclude' || x === '--include' || x === '-X') { i++; continue; }
-    if (/^--(?:exclude|include)=/.test(x) || /^-[xi]./.test(x)) continue;
-    if (x.startsWith('--')) { if (x.includes('=')) paths.push(x.slice(x.indexOf('=') + 1)); continue; }
-    if (x.startsWith('-')) { if (x.includes('/')) paths.push(x.slice(x.indexOf('/'))); continue; }
-    paths.push(x);
-  }
-  for (const x of paths) {
-    if (x.startsWith('/')) {
-      // The argument may be the folder itself (`-C /tmp`), so it is also checked as a folder.
-      const w = oddLocation(x) ?? strongPlace(normPath(`${x}/`));
-      if (w !== null && w.strength === 'strong') return w;
-    } else if (cwd !== null) {
-      const w = strongPlace(normPath(resolvePath(x, cwd)));
-      if (w !== null) return w;
-    }
-  }
-  return null;
-}
-
-const LAUNCH_DIR = /^(?:\/Users\/[^/]+\/Library\/LaunchAgents|\/Library\/Launch(?:Agents|Daemons))\//i;
-const DAEMON_DIR = /^\/Library\/LaunchDaemons\//i;
-
-type LaunchKind = 'agent' | 'daemon' | 'login' | 'app' | 'user' | null;
-/** The kind of launch item, from the btm item type (0 user item, 1 app, 2 login item, 3 agent, 4 daemon) or its plist directory. */
-function launchKind(itemType: number | null, plistPath: string | null): LaunchKind {
-  const byType: LaunchKind[] = ['user', 'app', 'login', 'agent', 'daemon'];
-  if (itemType !== null && byType[itemType] !== undefined) return byType[itemType]!;
-  if (plistPath === null) return null;
-  const n = normPath(plistPath);
-  return DAEMON_DIR.test(n) ? 'daemon' : LAUNCH_DIR.test(n) ? 'agent' : null;
-}
-const LAUNCH_MITRE: Record<NonNullable<LaunchKind>, string> = {
-  agent: 'T1543.001', daemon: 'T1543.004', login: 'T1547.015', app: 'T1547.015', user: 'T1547.015',
-};
-const launchMitre = (k: LaunchKind): string[] => (k === null ? ['T1543.001', 'T1543.004'] : [LAUNCH_MITRE[k]]);
-const LAUNCH_TITLE: Record<NonNullable<LaunchKind>, string> = {
-  agent: 'Launch agent registered', daemon: 'Launch daemon registered', login: 'Login item registered',
-  app: 'App registered to open at login', user: 'Login item registered (user item)',
-};
-const LAUNCH_EXPLANATION: Record<NonNullable<LaunchKind>, string> = {
-  agent: 'Registered a launch agent: launchd starts the program it names each time this user logs in.',
-  daemon: 'Registered a launch daemon: launchd starts the program it names at boot, usually as root, before anyone logs in.',
-  login: 'Registered a login item: macOS opens it each time this user logs in.',
-  app: 'Registered an app to open each time this user logs in.',
-  user: 'Added a login item to the user\'s list: macOS opens it each time this user logs in.',
-};
-const TERMINALS_EDITORS =
-  /\/(?:Terminal|iTerm2?|Visual Studio Code|Code|Cursor|Xcode|Claude|Warp|Ghostty|Alacritty|kitty|WezTerm)\.app\//;
-
 const MAX_EVIDENCE = 300;
-
-/** An absolute path, or a relative one joined to the working directory when it is known. */
-function resolvePath(path: string, cwd: string | null): string {
-  if (path.startsWith('/') || cwd === null) return path;
-  return `${cwd.replace(/\/+$/, '')}/${path.replace(/^\.\//, '')}`;
-}
-
-/**
- * Where osascript reads its program from, per `osascript [-l lang] [-i] [-s flags] [-e statement | programfile | -] [args]`:
- * inline (-e), a file, or stdin (no program file, or `-`).
- */
-/** osascript's language: `-l JavaScript` (JavaScript for Automation), else AppleScript. */
-function osascriptIsJs(args: string[]): boolean {
-  return args.some((a, i) => (a === '-l' && /^javascript$/i.test(args[i + 1] ?? '')) || /^-ljavascript$/i.test(a));
-}
-
-function osascriptSource(args: string[]): { kind: 'inline' } | { kind: 'stdin' } | { kind: 'file'; path: string } {
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i]!;
-    if (a.startsWith('-e')) return { kind: 'inline' };
-    if (a === '-l' || a === '-s') { i++; continue; }
-    if (a === '-') return { kind: 'stdin' };
-    if (a === '--') return args[i + 1] !== undefined && args[i + 1] !== '-' ? { kind: 'file', path: args[i + 1]! } : { kind: 'stdin' };
-    if (a.startsWith('-')) continue;   // -i, or -lJavaScript / -so with the value attached
-    return { kind: 'file', path: a };
-  }
-  return { kind: 'stdin' };
-}
 
 function cmdline(img: Image): string {
   const s = img.args && img.args.length > 0 ? img.args.join(' ') : (img.path ?? '');
@@ -309,6 +58,99 @@ function trimSlash(p: string): string {
   return p.length > 1 ? p.replace(/\/+$/, '') : p;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Recon and security settings
+
+/** Discovery tools, each with the technique it fits and what it finds out. */
+const RECON_KINDS = {
+  process: { mitre: 'T1057', what: 'Lists the running processes.' },
+  network: { mitre: 'T1016', what: 'Reads the network configuration (interfaces, DNS, proxies).' },
+  wifi: { mitre: 'T1016.002', what: 'Reads Wi-Fi information (the current network, or nearby ones).' },
+  security: { mitre: 'T1518.001', what: 'Checks the security settings (System Integrity Protection, Gatekeeper).' },
+  user: { mitre: 'T1033', what: 'Finds out which user it is running as.' },
+  system: { mitre: 'T1082', what: 'Gathers information about the machine (hardware, macOS version, name).' },
+} as const;
+type ReconKind = keyof typeof RECON_KINDS;
+export const RECON_TOOLS: Map<string, ReconKind> = new Map<string, ReconKind>([
+  ['ps', 'process'], ['networksetup', 'network'], ['scutil', 'network'], ['airport', 'wifi'],
+  ['csrutil', 'security'], ['spctl', 'security'], ['whoami', 'user'], ['id', 'user'],
+  ['system_profiler', 'system'], ['sw_vers', 'system'], ['sysctl', 'system'], ['ioreg', 'system'], ['uname', 'system'], ['hostname', 'system'],
+]);
+const RECON_TAIL = ' Attackers do this to size up a machine, but so does plenty of normal software, so on its own it is only context.';
+
+const SPCTL_DISABLE = ['--master-disable', '--global-disable', '--disable'];
+/** spctl options that change Gatekeeper rather than read it. */
+const SPCTL_WRITES = [...SPCTL_DISABLE, '--add', '--remove', '--enable', '--master-enable', '--global-enable', '--reset-default'];
+const NETWORK_REDIRECTS: Record<string, string> = {
+  '-setwebproxy': 'web proxy', '-setsecurewebproxy': 'secure web proxy', '-setautoproxyurl': 'automatic proxy URL',
+  '-setsocksfirewallproxy': 'SOCKS proxy', '-setdnsservers': 'DNS servers',
+};
+/** networksetup options that change the configuration rather than read it. */
+const NETWORKSETUP_WRITE = /^-(?:set|create|delete|remove|add|order|switch|import|detect)/i;
+
+/** What a recon tool finds out with these arguments, or null when the arguments make it a change, not a read. */
+function reconKind(img: Image): ReconKind | null {
+  const n = basename(img.path);
+  const kind = RECON_TOOLS.get(n);
+  if (kind === undefined) return null;
+  const a = rest(img);
+  if (n === 'spctl' && a.some(x => SPCTL_WRITES.includes(x))) return null;
+  if (n === 'networksetup' && a.some(x => NETWORKSETUP_WRITE.test(x))) return null;
+  if (n === 'sysctl' && (hasShortFlag(a, 'w') || a.some(x => x.includes('=')))) return null;
+  if (n === 'scutil') {
+    if (a.includes('--set')) return null;
+    if (a.includes('--get')) return 'system';
+  }
+  return kind;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Keychain
+
+/** Browser "Safe Storage" keychain entries (service "Chrome Safe Storage", account "Chrome", …): they decrypt saved logins and cookies. */
+const BROWSER_KEY = /^(?:google )?(?:chrome|chromium|brave|microsoft edge|edge|opera|vivaldi|arc)(?: browser)?(?: safe storage)?$|safe storage/i;
+const WALLET = /exodus|electrum|metamask|ledger|atomic|coinomi/i;
+
+function keychainFinding(args: string[]): MatchResult | null {
+  const s = securityArgs(args);
+  if (s === null) return null;
+  const cmd = `security ${s.sub}`;
+  if (s.sub === 'find-generic-password' || s.sub === 'find-internet-password') {
+    const o = parseOpts(s.rest, SECURITY_FIND_SPEC);
+    const prints = hasOpt(o, 'g') || hasOpt(o, 'w');
+    if (!prints) {
+      return { evidence: '', severity: 'low',
+        explanation: `Looked up a keychain item's attributes, not its secret, with \`${cmd}\` (no -g or -w). On its own this is only context.` };
+    }
+    const names = [...optValues(o, 's', []), ...optValues(o, 'a', []), ...optValues(o, 'l', [])].filter((v): v is string => !!v);
+    if (names.some(v => BROWSER_KEY.test(v))) {
+      return { evidence: '', severity: 'high',
+        explanation: `Printed a browser's Safe Storage key with \`${cmd}\`. That key decrypts the browser's saved passwords and cookies; stealers grab it first.` };
+    }
+    if (names.some(v => WALLET.test(v))) {
+      return { evidence: '', severity: 'high',
+        explanation: `Printed a crypto wallet's keychain entry with \`${cmd}\`. Stealers go after wallet passwords to empty the wallet.` };
+    }
+    return { evidence: '', severity: 'med',
+      explanation: `Ran \`${cmd}\` with -g or -w, which prints a saved password. Tools such as gh and git credential helpers do this too; check which item it asked for.` };
+  }
+  if (s.sub === 'dump-keychain') {
+    return hasShortFlag(s.rest, 'd')
+      ? { evidence: '', severity: 'high', explanation: 'Ran `security dump-keychain -d`, which prints every item in a keychain together with its secret.' }
+      : { evidence: '', severity: 'low', explanation: 'Listed the items in a keychain with `security dump-keychain`: names and attributes only (with -d it would include the secrets). On its own this is only context.' };
+  }
+  if (s.sub === 'unlock-keychain') {
+    return { evidence: '', severity: 'low', explanation: 'Unlocked a keychain with `security unlock-keychain`, so its items can be read. On its own this is only context.' };
+  }
+  if (s.sub === 'export') {
+    return { evidence: '', severity: 'low', explanation: 'Exported keys or certificates out of a keychain with `security export`. On its own this is only context.' };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Odd locations (program and script)
+
 /** "Ran a program from a temporary folder, …": the explanation of an odd-location-exec finding, from what triggered it. */
 function oddLocationExplanation(hits: { what: 'program' | 'script'; where: OddLocation }[]): string {
   const parts = hits.map(h => `${h.what} from ${LOCATION_WORDS[h.where.kind].long}`);
@@ -316,6 +158,65 @@ function oddLocationExplanation(hits: { what: 'program' | 'script'; where: OddLo
   return `Ran a ${parts.join(', and a ')}, not from /Applications or a system folder.`
     + (weakOnly ? ' On its own this is a weak signal.' : ' Malware is commonly run from places like this.');
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Persistence
+
+const LAUNCH_DIR = /^(?:\/Users\/[^/]+\/Library\/LaunchAgents|\/Library\/Launch(?:Agents|Daemons))\/[^/]+\.plist$/i;
+const DAEMON_DIR = /^\/Library\/LaunchDaemons\//i;
+const ALL_USERS_AGENT_DIR = /^\/Library\/LaunchAgents\//i;
+const USER_AGENT_DIR = /^\/Users\/[^/]+\/Library\/LaunchAgents\//i;
+
+type LaunchKind = 'agent' | 'daemon' | 'login' | 'app' | 'user' | null;
+/** The kind of launch item, from the btm item type (0 user item, 1 app, 2 login item, 3 agent, 4 daemon) or its plist directory. */
+function launchKind(itemType: number | null, plistPath: string | null): LaunchKind {
+  const byType: LaunchKind[] = ['user', 'app', 'login', 'agent', 'daemon'];
+  if (itemType !== null && byType[itemType] !== undefined) return byType[itemType]!;
+  if (plistPath === null) return null;
+  const n = normPath(plistPath);
+  return DAEMON_DIR.test(n) ? 'daemon' : ALL_USERS_AGENT_DIR.test(n) || USER_AGENT_DIR.test(n) ? 'agent' : null;
+}
+const LAUNCH_MITRE: Record<NonNullable<LaunchKind>, string> = {
+  agent: 'T1543.001', daemon: 'T1543.004', login: 'T1547.015', app: 'T1547.015', user: 'T1547.015',
+};
+const launchMitre = (k: LaunchKind): string[] => (k === null ? ['T1543.001', 'T1543.004'] : [LAUNCH_MITRE[k]]);
+const LAUNCH_TITLE: Record<NonNullable<LaunchKind>, string> = {
+  agent: 'Launch agent registered', daemon: 'Launch daemon registered', login: 'Login item registered',
+  app: 'App registered to open at login', user: 'Login item registered (user item)',
+};
+const ASKS = 'if the plist asks for it (RunAtLoad/KeepAlive)';
+/** What launchd does with an agent or daemon plist in this place: "…starts the program it names …". */
+function launchdStarts(kind: 'agent' | 'daemon', plistPath: string | null): { scope: string; when: string } {
+  if (kind === 'daemon') return { scope: '', when: `at boot, usually as root, ${ASKS}` };
+  const n = plistPath !== null ? normPath(plistPath) : '';
+  if (ALL_USERS_AGENT_DIR.test(n)) return { scope: ' for every user', when: `whenever anyone logs in, ${ASKS}` };
+  if (USER_AGENT_DIR.test(n)) return { scope: ' for this user', when: `when the user logs in, ${ASKS}` };
+  return { scope: '', when: `at login, ${ASKS}` };
+}
+function launchExplanation(kind: NonNullable<LaunchKind>, plistPath: string | null): string {
+  if (kind === 'agent' || kind === 'daemon') {
+    const { scope, when } = launchdStarts(kind, plistPath);
+    return `Registered a launch ${kind}${scope}: launchd starts the program it names ${when}.`;
+  }
+  return {
+    login: 'Registered a login item: macOS opens it each time this user logs in.',
+    app: 'Registered an app to open each time this user logs in.',
+    user: 'Added a login item to the user\'s list: macOS opens it each time this user logs in.',
+  }[kind];
+}
+
+/** Where a launch item's program sits, worded for persistence: why that place makes it worse. */
+const PERSIST_WORDS: Record<LocationKind, string> = {
+  translocated: 'inside a translocated app (a quarantined download macOS ran from a random read-only copy)',
+  temp: 'in a temporary folder, which any process can write to',
+  shared: 'in /Users/Shared, which every user can write to',
+  downloads: 'in the Downloads folder, which the user can write to',
+  volume: 'on a mounted disk image or external volume, which can be swapped or disappear',
+  hidden: 'in a hidden folder in the home folder, which the user can write to',
+  'home-dot': 'in a dot-folder in the home folder, which the user can write to',
+  tooling: 'inside a project build or tooling folder in the home folder, which the user can write to',
+  'go-build': 'in a Go build folder in the temporary area, which any process can write to',
+};
 
 const APP_BUNDLE_EXE = /\.app\/Contents\/MacOS\/[^/]+$/i;
 const HOME_CACHES = /^\/Users\/[^/]+\/Library\/Caches\//i;
@@ -336,8 +237,8 @@ function launchTarget(item: PersistenceItem): { path: string; isApp: boolean } |
 /**
  * How bad a launch item is, from what it runs. High when it runs a shell or interpreter, sits anywhere a user process
  * can write (temporary folders, /Users/Shared, Downloads, ~/Library/Caches, hidden folders, or a loose program anywhere
- * in a home folder), or ran unsigned or ad-hoc signed in this capture. An app bundle in a home folder whose signature
- * was not seen (a per-user updater such as GoogleUpdater) stays med, as does everything else.
+ * in a home folder), or ran unsigned or ad-hoc signed in this capture. An app bundle in a home folder that was not seen
+ * unsigned (a per-user updater such as GoogleUpdater) stays med, as does everything else.
  */
 function persistenceSeverity(target: { path: string; isApp: boolean } | null, m: CaptureModel): { severity: Severity; reason: string } {
   if (target === null) return { severity: 'med', reason: 'the event names no program it can place' };
@@ -347,7 +248,7 @@ function persistenceSeverity(target: { path: string; isApp: boolean } | null, m:
   if (!target.isApp && INTERPRETER.test(n)) return { severity: 'high', reason: `it runs a script interpreter (${n})` };
   const p = normPath(target.path);
   const where = oddLocation(target.isApp ? `${p}/` : p);
-  if (where !== null) return { severity: 'high', reason: `${what} is in ${LOCATION_WORDS[where.kind].long}` };
+  if (where !== null) return { severity: 'high', reason: `${what} is ${PERSIST_WORDS[where.kind]}` };
   if (HOME_CACHES.test(p)) return { severity: 'high', reason: `${what} is in ~/Library/Caches, which the user can write to` };
   const key = p.toLowerCase();
   const matches = (i: Image) => {
@@ -362,23 +263,72 @@ function persistenceSeverity(target: { path: string; isApp: boolean } | null, m:
     if (!target.isApp && !APP_BUNDLE_EXE.test(p)) return { severity: 'high', reason: 'a loose program in a home folder, which the user (or anything running as them) can overwrite' };
     const team = seen.find(i => i.teamId !== null)?.teamId;
     return { severity: 'med', reason: team ? `an app bundle in a home folder, signed by team ${team}`
+      : seen.length > 0 ? 'an app bundle in a home folder; it ran signed without a team ID'
       : 'an app bundle in a home folder; its signature was not seen in this capture' };
   }
-  return { severity: 'med', reason: `${what} is outside temporary and user-writable folders` };
+  return { severity: 'med', reason: `${what} is in a system, /Applications or package-manager location` };
 }
 
-const PLIST_EXPLANATION = {
-  agent: 'Wrote a launch agent plist: once loaded, launchd starts the program it names each time a user logs in. No registration event in the capture accounts for it.',
-  daemon: 'Wrote a launch daemon plist: once loaded, launchd starts the program it names at boot, usually as root. No registration event in the capture accounts for it.',
-  any: 'Wrote a launch agent or daemon plist, which launchd runs at login or boot once loaded. No registration event in the capture accounts for it.',
-};
+/** Apple's own system daemons (smd, backgroundtaskmanagementd) instigate most launch item registrations. */
+const SYSTEM_DIRS = /^\/(?:System|usr\/libexec|usr\/sbin)\//;
+
+/**
+ * The process a persistence finding attaches to, and through which link: the app that registered the item, else the
+ * instigator (the XPC caller), else the plist's creator; null means a standalone row. An app or instigator counts
+ * only when it is a captured process with a known path and is not an Apple platform binary under /System,
+ * /usr/libexec or /usr/sbin: pinning a finding on smd would point at the messenger, and a pathless ghost cannot be
+ * told apart from it.
+ */
+export function persistenceOwner(m: CaptureModel, item: PersistenceItem): { id: ProcId; via: 'app' | 'instigator' | 'creator' } | null {
+  for (const via of ['app', 'instigator'] as const) {
+    const id = item[via];
+    const p = id !== null ? m.processes.get(id) : undefined;
+    const img = p && !p.ghost ? imageAt(p, item.seq) : undefined;
+    if (!img || img.path === null) continue;
+    if (img.isPlatform && SYSTEM_DIRS.test(img.path)) continue;
+    return { id: p!.id, via };
+  }
+  return item.creator !== null && m.processes.has(item.creator) ? { id: item.creator, via: 'creator' } : null;
+}
+
+/** "Evil (pid 900)", or "a standalone launch item" when the registration attaches to no process. */
+function ownerName(m: CaptureModel, owner: { id: ProcId } | null, seq: number): string {
+  const p = owner ? m.processes.get(owner.id) : undefined;
+  if (!p) return 'a standalone launch item row';
+  const img = imageAt(p, seq);
+  return `${basename(img?.path ?? null) || 'pid'} (pid ${p.pid})`;
+}
 
 const PERSISTENCE_EXPLANATION = 'Something registered itself to run automatically at login or boot.';
+const PLIST_GENERIC = `Wrote a launch agent or daemon plist, which launchd runs at login or boot ${ASKS}.`;
+
+function plistBase(plists: string[]): string {
+  const kinds = new Set(plists.map(h => launchKind(null, h)));
+  if (kinds.size !== 1) return PLIST_GENERIC;
+  const kind = [...kinds][0];
+  if (kind !== 'agent' && kind !== 'daemon') return PLIST_GENERIC;
+  const scopes = new Set(plists.map(h => launchdStarts(kind, h).scope));
+  const { scope, when } = scopes.size === 1 ? launchdStarts(kind, plists[0]!) : launchdStarts(kind, null);
+  return `Wrote a launch ${kind} plist${scope}: launchd starts the program it names ${when}.`;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Pipes
+
+/** The language an exec'd image reads from a piped stdin, or null. */
+function pipeLang(img: Image): PipeLang | null {
+  if (img.stdinIsPipe !== true || img.script !== null || !img.args) return null;
+  const lang = PIPE_LANGS.find(([re]) => re.test(basename(img.path)))?.[1];
+  return lang && readsStdin(lang, img.args) ? lang : null;
+}
+
+/** openssl digest commands, where -d means debug output rather than decode. */
+const OPENSSL_DIGESTS = /^(?:dgst|md4|md5|sha1|sha224|sha256|sha384|sha512|rmd160|ripemd160)$/;
 
 export const RULES: Rule[] = [
   {
     id: 'fake-prompt', title: 'Dialog box from osascript', severity: 'high',
-    explanation: 'Shows a dialog box with AppleScript\'s `display dialog`. Info-stealers use this to fake a system password prompt.',
+    explanation: 'Shows a dialog box from an osascript script (AppleScript `display dialog`, or JavaScript for Automation `displayDialog`). Info-stealers use this to fake a system password prompt.',
     mitre: ['T1056.002'], scope: 'image',
     match: ({ img }) => {
       if (basename(img.path) !== 'osascript' || !img.args) return null;
@@ -388,47 +338,79 @@ export const RULES: Rule[] = [
         evidence: cmdline(img),
         explanation: /hidden answer|hiddenAnswer/i.test(text)
           ? 'Shows a dialog box that asks for typed text and hides it as dots, the way a password prompt does. Info-stealers use this to fake a system password prompt.'
-          : 'Shows a dialog box with AppleScript\'s `display dialog`. Info-stealers use this to fake a system password prompt, or a fake error message once they are done.',
+          : 'Shows a dialog box from an osascript script (AppleScript `display dialog`, or JavaScript for Automation `displayDialog`). Info-stealers use this to fake a system password prompt, or a fake error message once they are done.',
       };
     },
   },
   {
     id: 'osascript-script', title: 'osascript script from a file in an odd place, or from a pipe', severity: 'med',
-    explanation: 'osascript ran a script (AppleScript, or JavaScript for Automation) from a file in a temporary, download, shared or hidden folder, or piped into it with no file on disk.',
+    explanation: 'osascript ran a script (AppleScript, or JavaScript for Automation) from a file in a temporary, download, shared or hidden folder, a mounted volume or a translocated app, or piped into it with no file on disk.',
     mitre: ['T1059.002', 'T1059.007'], scope: 'image',
     match: ({ img }) => {
       if (basename(img.path) !== 'osascript' || !img.args) return null;
-      const a = rest(img);
-      const src = osascriptSource(a);
-      const lang = osascriptIsJs(a) ? { name: 'JavaScript for Automation script', mitre: ['T1059.007'] } : { name: 'AppleScript', mitre: ['T1059.002'] };
-      if (src.kind === 'stdin') {
+      const o = osascriptArgs(rest(img));
+      const mitre = o.js ? ['T1059.007'] : ['T1059.002'];
+      const what = o.js ? 'a JavaScript for Automation script' : 'an AppleScript';
+      if (o.source === 'stdin') {
         return img.stdinIsPipe === true
-          ? { evidence: `${cmdline(img)} with stdin from a pipe`, mitre: lang.mitre,
-            explanation: `osascript ran ${lang.name === 'AppleScript' ? 'an AppleScript' : 'a JavaScript for Automation script'} piped into it, so there is no script file on disk to inspect.` }
+          ? { evidence: `${cmdline(img)} with stdin from a pipe`, mitre,
+            explanation: `osascript ran ${what} piped into it, so there is no script file on disk to inspect.` }
           : null;
       }
-      if (src.kind !== 'file') return null;
-      const file = resolvePath(src.path, img.cwd);
+      if (o.source !== 'file') return null;
+      const file = resolvePath(o.file!, img.cwd);
       const where = oddLocation(file);
       if (where === null || where.strength !== 'strong') return null;
       return {
-        evidence: `${cmdline(img)} (script ${file}, ${LOCATION_WORDS[where.kind].short})`, mitre: lang.mitre,
-        explanation: `osascript ran ${lang.name === 'AppleScript' ? 'an AppleScript' : 'a JavaScript for Automation script'} file from ${LOCATION_WORDS[where.kind].long}. Malware drops scripts in places like this and runs them with osascript.`,
+        evidence: `${cmdline(img)} (script ${file}, ${LOCATION_WORDS[where.kind].short})`, mitre,
+        explanation: `osascript ran ${what} file from ${LOCATION_WORDS[where.kind].long}. Malware drops scripts in places like this and runs them with osascript.`,
       };
     },
   },
   {
-    id: 'keychain-access', title: 'Keychain read with security', severity: 'high',
-    explanation: 'Ran `security` to read passwords, keys or certificates out of the macOS keychain (find-generic-password, find-internet-password, dump-keychain, export, unlock-keychain). Stealers use it to pull saved passwords, such as the key that unlocks Chrome\'s stored logins.',
+    id: 'keychain-access', title: 'Keychain read with security', severity: 'high', gated: 'when-low',
+    explanation: 'Ran `security` against the macOS keychain. High when it prints a browser Safe Storage key or a crypto wallet entry (find-generic-password / find-internet-password with -g or -w), or dumps every secret (dump-keychain -d); med when it prints any other saved password; low (context only) for attribute lookups, unlock-keychain, export and dump-keychain without -d.',
     mitre: ['T1555.001'], scope: 'image',
     match: ({ img }) => {
       if (basename(img.path) !== 'security') return null;
-      const sub = securitySubcommand(rest(img));
-      if (sub === undefined || !Object.hasOwn(KEYCHAIN_ACTIONS, sub)) return null;
-      return {
-        evidence: cmdline(img),
-        explanation: `Ran \`security ${sub}\`, which ${KEYCHAIN_ACTIONS[sub]}. Stealers use the keychain to pull saved passwords, such as the key that unlocks Chrome's stored logins.`,
-      };
+      const res = keychainFinding(rest(img));
+      return res ? { ...res, evidence: cmdline(img) } : null;
+    },
+  },
+  {
+    id: 'security-setting-change', title: 'Security setting changed', severity: 'high',
+    explanation: 'Turned Gatekeeper off (spctl --master-disable, --global-disable, --disable), added a Gatekeeper exception (spctl --add), or pointed web or DNS traffic at another server (networksetup -setwebproxy, -setsecurewebproxy, -setautoproxyurl, -setsocksfirewallproxy, -setdnsservers).',
+    mitre: ['T1562.001', 'T1553.001', 'T1557'], scope: 'image',
+    match: ({ img }) => {
+      const n = basename(img.path);
+      const a = rest(img);
+      if (n === 'spctl') {
+        const off = a.find(x => SPCTL_DISABLE.includes(x));
+        if (off !== undefined) {
+          return {
+            evidence: cmdline(img), severity: 'high', mitre: ['T1562.001'], title: 'Gatekeeper turned off',
+            explanation: off === '--disable'
+              ? 'Disabled Gatekeeper assessments with `spctl --disable` (all of them, or the rule named), so macOS stops checking those apps before they run.'
+              : `Turned Gatekeeper off with \`spctl ${off}\`, so macOS stops checking downloaded apps before they run.`,
+          };
+        }
+        if (a.includes('--add')) {
+          return {
+            evidence: cmdline(img), severity: 'high', mitre: ['T1553.001'], title: 'Gatekeeper exception added',
+            explanation: 'Added a Gatekeeper exception with `spctl --add`, so the named app or rule passes Gatekeeper without its usual check.',
+          };
+        }
+        return null;
+      }
+      if (n === 'networksetup') {
+        const flag = a.find(x => Object.hasOwn(NETWORK_REDIRECTS, x.toLowerCase()));
+        if (flag === undefined) return null;
+        return {
+          evidence: cmdline(img), severity: 'med', mitre: ['T1557'], title: 'Web proxy or DNS changed',
+          explanation: `Changed the ${NETWORK_REDIRECTS[flag.toLowerCase()]} with \`networksetup ${flag}\`, which redirects web or DNS traffic through a server someone chose. A common adware trick.`,
+        };
+      }
+      return null;
     },
   },
   {
@@ -457,34 +439,44 @@ export const RULES: Rule[] = [
       const kind = launchKind(item.itemType, item.plistPath);
       return {
         evidence: `${evidence}; ${severity}: ${reason}`, severity, mitre: launchMitre(kind),
-        ...(kind !== null ? { title: LAUNCH_TITLE[kind], explanation: LAUNCH_EXPLANATION[kind] } : {}),
+        ...(kind !== null ? { title: LAUNCH_TITLE[kind], explanation: launchExplanation(kind, item.plistPath) } : {}),
       };
     },
   },
   {
     id: 'persistence-plist', title: 'Launch agent/daemon plist written', severity: 'high',
-    explanation: PLIST_EXPLANATION.any,
+    explanation: `${PLIST_GENERIC} Says whether a registration event in the capture accounts for it, and which process that registration is attributed to.`,
     mitre: ['T1543.001', 'T1543.004'], scope: 'process',
     matchProcess: (p, m) => {
-      const folded = new Set<string>();
-      for (const it of m.persistence) {
-        if (it.kind === 'add' && it.creator === p.id && it.plistPath !== null) folded.add(normPath(it.plistPath));
-      }
-      const hits = new Set<string>();
+      const unregistered: string[] = [];
+      const elsewhere = new Map<string, string>();     // plist -> who its registration is attributed to
+      const seen = new Set<string>();
       for (const op of p.fileOps) {
+        // A temp file renamed over the plist counts through the rename's destination.
         const target = op.kind === 'create' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
         if (target === undefined) continue;
         const n = normPath(target);
-        if (LAUNCH_DIR.test(n) && !folded.has(n)) hits.add(target);
+        if (!LAUNCH_DIR.test(n) || seen.has(n)) continue;
+        seen.add(n);
+        const items = m.persistence.filter(it => it.kind === 'add' && it.plistPath !== null && normPath(it.plistPath) === n);
+        if (items.length === 0) { unregistered.push(target); continue; }
+        const owners = items.map(it => ({ it, owner: persistenceOwner(m, it) }));
+        if (owners.some(o => o.owner?.id === p.id)) continue;   // the registration's own finding is on this process
+        elsewhere.set(target, [...new Set(owners.map(o => ownerName(m, o.owner, o.it.seq)))].join(', '));
       }
-      if (hits.size === 0) return null;
-      const kinds = new Set([...hits].map(h => launchKind(null, h)));
+      const hits = [...unregistered, ...elsewhere.keys()];
+      if (hits.length === 0) return null;
+      const kinds = new Set(hits.map(h => launchKind(null, normPath(h))));
       const only = kinds.size === 1 ? [...kinds][0]! : null;
+      const names = [...new Set(elsewhere.values())].join(', ');
+      const suffix = elsewhere.size === 0 ? ' No registration event in the capture accounts for it.'
+        : unregistered.length === 0 ? ` Its registration in the capture is attributed to ${names}, so that finding is on that row.`
+        : ` Some have no registration event in the capture; the registration of the others is attributed to ${names}.`;
       return {
-        evidence: `wrote ${[...hits].join(', ')}`,
+        evidence: `wrote ${hits.map(h => (elsewhere.has(h) ? `${h} (registration attributed to ${elsewhere.get(h)})` : h)).join(', ')}`,
         mitre: [...new Set([...kinds].flatMap(launchMitre))].sort(),
-        ...(only === 'agent' ? { title: 'Launch agent plist written', explanation: PLIST_EXPLANATION.agent }
-          : only === 'daemon' ? { title: 'Launch daemon plist written', explanation: PLIST_EXPLANATION.daemon } : {}),
+        explanation: `${plistBase(hits)}${suffix}`,
+        ...(only === 'agent' ? { title: 'Launch agent plist written' } : only === 'daemon' ? { title: 'Launch daemon plist written' } : {}),
       };
     },
   },
@@ -517,15 +509,15 @@ export const RULES: Rule[] = [
       const n = basename(img.path);
       const a = rest(img);
       // openssl options are single-dash words, never clusters: only `-d` itself means decode/decrypt (`-md`, `-days` do not).
-      // `openssl dgst -d` is the one command where -d means something else (debug output).
-      if (n === 'openssl' && a.includes('-d') && a[0] !== 'dgst') return { evidence: cmdline(img) };
+      // In the digest commands (dgst, sha256, md5…) -d means debug output.
+      if (n === 'openssl' && a.includes('-d') && !OPENSSL_DIGESTS.test(a[0] ?? '')) return { evidence: cmdline(img) };
       if (n === 'base64' && (hasShortFlag(a, 'd') || hasShortFlag(a, 'D') || a.includes('--decode'))) return { evidence: cmdline(img) };
       return null;
     },
   },
   {
     id: 'shell-from-pipe', title: 'Shell or interpreter reading commands from a pipe', severity: 'med',
-    explanation: "A shell, or python, perl or ruby, ran commands piped into it (the `curl … | bash` pattern), so there's no script file on disk to inspect.",
+    explanation: "A shell, or python, perl or ruby, ran commands piped into it (the `curl … | bash` pattern), so there's no script file on disk to inspect. Version and help probes (--version, -V, -h, perl/ruby -v) do not count.",
     mitre: ['T1059.004', 'T1059.006', 'T1059'], scope: 'image',
     match: ({ p, img, imgIndex }) => {
       const lang = pipeLang(img);
@@ -551,7 +543,8 @@ export const RULES: Rule[] = [
       if (imgIndex !== p.images.findIndex(i => !i.inherited && i.path !== null && SHELLS.has(i.path))) return null;
       const parent = originalParentImage(m, p)?.path ?? null;
       if (parent === null || !parent.includes('.app/')) return null;
-      if (TERMINALS_EDITORS.test(parent) || parent.includes('Code Helper')) return null;
+      if (/\/(?:Terminal|iTerm2?|Visual Studio Code|Code|Cursor|Xcode|Claude|Warp|Ghostty|Alacritty|kitty|WezTerm)\.app\//.test(parent)
+        || parent.includes('Code Helper')) return null;
       return { evidence: `${parent} ran ${cmdline(img)}` };
     },
   },
@@ -563,16 +556,20 @@ export const RULES: Rule[] = [
       const n = basename(img.path);
       if (n !== 'curl' && n !== 'wget') return null;
       const a = rest(img);
+      const isFile = (t: string | undefined): boolean => t !== undefined && t !== '-' && t !== '/dev/null';
       if (n === 'wget') {
-        if (a.includes('--spider')) return null;   // only checks that the URL exists
+        const o = parseOpts(a, WGET_SPEC);
+        // --spider only checks that the URL exists; --version and --help print and exit.
+        if (hasOpt(o, 'V', ['--spider', '--version', '--help']) || hasOpt(o, 'h')) return null;
+        if (!o.positionals.some(looksLikeUrl) && !hasOpt(o, 'i', ['--input-file'])) return null;
         // wget saves to a file named after the URL unless -O / --output-document says otherwise; its -o is the log file.
-        const targets = optionValues(a, 'O', ['--output-document']);
+        const targets = optValues(o, 'O', ['--output-document']);
         if (targets.length === 0) return { evidence: `${cmdline(img)}; wget saves to a file named after the URL by default` };
-        if (targets.some(isFileTarget)) return { evidence: cmdline(img) };
+        if (targets.some(isFile)) return { evidence: cmdline(img) };
       } else {
         // curl writes to stdout unless -o / --output names a file (not /dev/null or -) or -O / --remote-name names it after the URL.
-        const remoteName = hasShortFlag(a, 'O') || a.includes('--remote-name') || a.includes('--remote-name-all');
-        if (remoteName || optionValues(a, 'o', ['--output']).some(isFileTarget)) return { evidence: cmdline(img) };
+        const o = parseOpts(a, CURL_SPEC);
+        if (hasOpt(o, 'O', ['--remote-name', '--remote-name-all']) || optValues(o, 'o', ['--output']).some(isFile)) return { evidence: cmdline(img) };
       }
       const created = p.fileOps.find(op => op.kind === 'create');
       return created ? { evidence: `${cmdline(img)}; created ${created.path}` } : null;
@@ -585,9 +582,9 @@ export const RULES: Rule[] = [
     match: ({ img }) => {
       const n = basename(img.path);
       const a = rest(img);
-      const hit = (n === 'ditto' && hasShortFlag(a, 'c')) || n === 'zip' || (n === 'tar' && tarCreates(a));
-      if (!hit) return null;
-      const where = stagingPlace(a, img.cwd);
+      const tool = n === 'ditto' && hasShortFlag(a, 'c') ? 'ditto' : n === 'zip' ? 'zip' : n === 'tar' && tarCreates(a) ? 'tar' : null;
+      if (tool === null) return null;
+      const where = stagingPlace(tool, a, img.cwd);
       if (where === null) return { evidence: cmdline(img), severity: 'med' };
       return {
         evidence: `${cmdline(img)} (staged in ${LOCATION_WORDS[where.kind].short})`, severity: 'high',
@@ -596,10 +593,9 @@ export const RULES: Rule[] = [
     },
   },
   {
-    id: 'odd-location-exec', title: 'Ran from an unusual location', severity: 'med',
+    id: 'odd-location-exec', title: 'Ran from an unusual location', severity: 'med', gated: 'when-low',
     explanation: 'Ran a program or script from a temporary folder, Downloads, /Users/Shared, a mounted volume, a translocated app or a hidden folder, not from /Applications or a system folder.',
     mitre: ['T1204.002'], scope: 'image',
-    // Low results (team-signed, or a developer tooling location) are gated chain-only by the engine.
     match: ({ img }) => {
       const hits: { severity: Severity; evidence: string; what: 'program' | 'script'; where: OddLocation }[] = [];
       const where = img.path !== null ? oddLocation(img.path) : null;
@@ -629,15 +625,15 @@ export const RULES: Rule[] = [
     },
   },
   {
-    id: 'unsigned', title: 'Unsigned binary', severity: 'med',
+    id: 'unsigned', title: 'Unsigned binary', severity: 'med', trait: true,
     explanation: 'Not signed at all. Unsigned binaries are a common trait of malware; not a technique by itself.',
-    mitre: ['T1036'], scope: 'image',
+    mitre: [], scope: 'image',
     match: ({ img }) => isUnsigned(img) ? { evidence: `${img.path} has no code signature` } : null,
   },
   {
-    id: 'adhoc', title: 'Ad-hoc signed binary', severity: 'low',
+    id: 'adhoc', title: 'Ad-hoc signed binary', severity: 'low', trait: true, gated: 'always',
     explanation: 'Ad-hoc signed: it carries a signature but no developer identity. Common for Homebrew and locally built tools, and for malware; a trait, not a technique by itself.',
-    mitre: ['T1036'], scope: 'image',
+    mitre: [], scope: 'image',
     match: ({ img }) =>
       !img.isPlatform && !!img.signingId && isAdhoc(img)
         ? { evidence: `${img.path} is ad-hoc signed (${img.signingId}), with no developer identity` } : null,
@@ -654,13 +650,13 @@ export const RULES: Rule[] = [
     },
   },
   {
-    id: 'recon', title: 'System or user discovery', severity: 'low',
-    explanation: `Runs a tool that finds out about the machine, its user, network, processes or security settings.${RECON_TAIL}`,
-    mitre: ['T1057', 'T1016', 'T1518.001', 'T1033', 'T1082'], scope: 'image',
+    id: 'recon', title: 'System or user discovery', severity: 'low', gated: 'always',
+    explanation: `Runs a tool that reads the machine, its user, network, Wi-Fi, processes or security settings (ps, networksetup, scutil, airport, csrutil, spctl, whoami, id, system_profiler, sw_vers, sysctl, ioreg, uname, hostname). Forms that change a setting are not recon.${RECON_TAIL}`,
+    mitre: ['T1057', 'T1016', 'T1016.002', 'T1518.001', 'T1033', 'T1082'], scope: 'image',
     match: ({ img }) => {
-      const kind = RECON_TOOLS.get(basename(img.path));
-      if (kind === undefined) return null;
-      const { mitre, what } = RECON_KINDS[kind]!;
+      const kind = reconKind(img);
+      if (kind === null) return null;
+      const { mitre, what } = RECON_KINDS[kind];
       return { evidence: cmdline(img), mitre: [mitre], explanation: `${what}${RECON_TAIL}` };
     },
   },

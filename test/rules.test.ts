@@ -171,7 +171,8 @@ describe('download rule needs a file on disk', () => {
 test('every finding explains itself', () => {
   for (const f of ['es-lab.jsonl', 'atomic_stealer.json', 'rustbucket.json', 'shlayer.json'] as const)
     for (const x of queued(f).items) for (const fd of x.item.findings) {
-      expect(fd.explanation.length).toBeGreaterThan(20); expect(fd.mitre.length).toBeGreaterThan(0);
+      expect(fd.explanation.length).toBeGreaterThan(20);
+      if (!fd.trait) expect(fd.mitre.length).toBeGreaterThan(0);
     }
 });
 
