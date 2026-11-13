@@ -48,26 +48,36 @@ const FIGS: [number, number][] = [[350, 112], [236, 126], [612, 92], [500, 104],
 
 const arc = (cx: number, r: number, y = 240): string => `M ${cx - r} ${y} A ${r} ${r} 0 0 1 ${cx + r} ${y}`;
 
+/** A short sample of a root's line, drawn as the Roots panel and the root field draw it. */
+export function RootSwatch({ kind }: { kind: 'original' | 'current' | 'responsible' }) {
+  return (
+    <svg className="swatch" width="22" height="8" viewBox="0 0 22 8" aria-hidden="true">
+      <line x1="0" y1="4" x2="22" y2="4" strokeWidth="3" stroke={`var(--root-${kind})`}
+        strokeDasharray={kind === 'current' ? '5 3' : undefined} />
+    </svg>
+  );
+}
+
 export function Canopy() {
   return (
     <svg viewBox="0 0 960 240" preserveAspectRatio="xMinYMax slice" aria-hidden="true">
       {BACK.map(([cx, r]) => (
         <g key={cx}>
           <path d={`${arc(cx, r)} Z`} fill="var(--botanical-2)" />
-          {[0.86, 0.72].map(k => <path key={k} d={arc(cx, r * k)} fill="none" stroke="var(--accent)" strokeOpacity=".12" />)}
+          {[0.86, 0.72].map(k => <path key={k} d={arc(cx, r * k)} fill="none" stroke="var(--accent)" strokeOpacity=".08" />)}
         </g>
       ))}
       {FRONT.map(([cx, r]) => (
         <g key={cx}>
           <path d={`${arc(cx, r)} Z`} fill="var(--botanical)" />
-          {[0.84, 0.66, 0.48].map(k => <path key={k} d={arc(cx, r * k)} fill="none" stroke="var(--accent)" strokeOpacity=".22" />)}
+          {[0.84, 0.66, 0.48].map(k => <path key={k} d={arc(cx, r * k)} fill="none" stroke="var(--accent)" strokeOpacity=".15" />)}
         </g>
       ))}
       {BRANCHES.map((pts, i) => (
         <polyline key={i} points={pts.map(p => p.join(',')).join(' ')} fill="none" stroke="var(--limb)" strokeWidth="2" />
       ))}
       {FORKS.map(([x, y]) => <circle key={x} cx={x} cy={y} r="4" fill="var(--limb)" />)}
-      {FIGS.map(([x, y]) => <circle key={x} cx={x} cy={y} r="4.5" fill="var(--node)" />)}
+      {FIGS.map(([x, y]) => <circle key={x} cx={x} cy={y} r="4" fill="var(--node)" />)}
     </svg>
   );
 }
@@ -78,27 +88,27 @@ const HANG: [number, number, boolean][] = [
   [57, 38, false], [61, 63, true], [66, 18, false], [84, 52, false], [88, 30, true], [93, 66, false],
 ];
 export const TRUNKS: { x: number; kind: 'original' | 'current' | 'responsible'; label: string }[] = [
-  { x: 22, kind: 'original', label: 'original parent' },
-  { x: 48, kind: 'current', label: 'current parent' },
-  { x: 76, kind: 'responsible', label: 'responsible' },
+  { x: 20, kind: 'original', label: 'Original parent' },
+  { x: 48, kind: 'current', label: 'Current parent' },
+  { x: 78, kind: 'responsible', label: 'Responsible' },
 ];
 
 export function RootField() {
   return (
     <svg width="100%" height="100%" aria-hidden="true">
-      {HANG.map(([x, y, node]) => (
-        <g key={x}>
-          <line x1={`${x}%`} y1="0" x2={`${x}%`} y2={`${y}%`} stroke="var(--root-line)" strokeWidth="1.5" />
+      {HANG.map(([x, y, node], i) => (
+        <g key={x} className="hang" style={{ animationDelay: `${(i % 6) * 140}ms` }}>
+          <rect x={`${x}%`} y="0" width="2" style={{ height: `${y}%` }} fill="var(--root-line)" />
           {node && <circle cx={`${x}%`} cy={`${y}%`} r="3.5" fill="var(--node)" />}
         </g>
       ))}
       {TRUNKS.map(({ x, kind }) => (
-        <g key={kind}>
-          <line x1={`${x}%`} y1="0" x2={`${x}%`} y2="100%" stroke={`var(--root-${kind})`} strokeWidth="6"
+        <g key={kind} className={`trunk ${kind}`}>
+          <line className="stem" x1={`${x}%`} y1="0" x2={`${x}%`} y2="100%" stroke={`var(--root-${kind})`}
             strokeDasharray={kind === 'current' ? '14 8' : undefined} />
           <line x1={`${x}%`} y1="94%" x2={`${x - 2.5}%`} y2="100%" stroke={`var(--root-${kind})`} strokeWidth="2" />
           <line x1={`${x}%`} y1="94%" x2={`${x + 2.5}%`} y2="100%" stroke={`var(--root-${kind})`} strokeWidth="2" />
-          <circle cx={`${x}%`} cy="5" r="5" fill="var(--node)" />
+          <circle className="pulse" cx={`${x}%`} cy="5" r="5" fill="var(--node)" />
         </g>
       ))}
     </svg>

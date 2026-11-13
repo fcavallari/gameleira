@@ -20,18 +20,30 @@ const TABS: { id: View; label: string }[] = [
 
 const fmt = (n: number): string => n.toLocaleString('en-US');
 
-export function CaptureCommand({ hint = 'Run this, stop it with Ctrl-C, then drop capture.jsonl here.' }: { hint?: string }) {
+/** The capture command as a terminal block, with its Copy button in the block's own header. */
+export function CommandBlock() {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try { await navigator.clipboard.writeText(CAPTURE_CMD); setCopied(true); setTimeout(() => { setCopied(false); }, 1500); }
     catch { /* clipboard unavailable (e.g. file://): the command is selectable */ }
   };
   return (
+    <div className="cmdblock">
+      <div className="cmdbar">
+        <span>Terminal, on the Mac you are investigating</span>
+        <button className="copy" onClick={() => { void copy(); }} aria-live="polite">{copied ? 'Copied' : 'Copy'}</button>
+      </div>
+      <pre><code>{CAPTURE_CMD}</code></pre>
+    </div>
+  );
+}
+
+export function CaptureCommand({ hint = 'Run this, stop it with Ctrl-C, then drop capture.jsonl here.' }: { hint?: string }) {
+  return (
     <div className="cmd">
       <h2>Capture on the Mac you are investigating</h2>
       <p className="muted">{hint}</p>
-      <pre><code>{CAPTURE_CMD}</code></pre>
-      <button onClick={() => { void copy(); }}>{copied ? 'Copied' : 'Copy'}</button>
+      <CommandBlock />
       <ul>
         <li><code>fork</code>, <code>exec</code> and <code>exit</code> build the tree and its lifetimes.</li>
         <li><code>create</code>, <code>rename</code>, <code>unlink</code> and <code>setextattr</code> show what each process wrote.</li>
