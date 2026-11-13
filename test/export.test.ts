@@ -128,7 +128,7 @@ test('import rejects a snapshot severity or start time the screens could not ren
   expect(await store.listSessions()).toEqual(before);
   await importSession(store, { ...out, verdicts: out.verdicts.map(x => ({ ...x, snapshot: { ...x.snapshot, severity: null } })) });   // null severity is fine
 });
-test('the hand-edited file from the review (fileName: 5, two confirmed verdicts) is rejected, not imported', async () => {
+test('a hand-edited file (fileName: 5, two confirmed verdicts) is rejected, not imported', async () => {
   const out = await exportSession(store, s.id, { includeEnv: false });
   const confirmed = { ...out.verdicts[0]!, status: 'confirmed' as const };
   const edited = { ...out, captures: [{ ...out.captures[0]!, fileName: 5 }],

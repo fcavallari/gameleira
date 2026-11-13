@@ -458,7 +458,7 @@ test('routine marks hide queue items; the count shows in the header', async () =
   expect(screen.getByTestId('hidden')).toHaveTextContent(`${ctx.triage!.hiddenCount} routine hidden`);
 });
 
-// --- fix round 1 ----------------------------------------------------------------------------------------------
+// --- loads that outlive their session ----------------------------------------------------------------------------------------------
 
 test('a load that finishes after leaving the session writes nothing and leaves no progress behind', async () => {
   const store = await openStore();
@@ -692,7 +692,7 @@ test('the c key twice under a held write ends unreviewed in the store', async ()
   await waitFor(async () => { expect(await real.listVerdicts(sid)).toMatchObject([{ status: 'unreviewed' }]); });
 }, 60_000);
 
-// --- Triage view (Task 10) --------------------------------------------------------------------------------------
+// --- Triage view --------------------------------------------------------------------------------------
 
 let labLoad: Promise<LoadedCapture> | undefined;
 /** Parse the synthetic lab once for every triage test. */
@@ -1347,7 +1347,7 @@ test('setVerdict accepts a persistence-only item by its queue key', async () => 
   expect(ctx.verdicts.get(item.key)?.status).toBe('benign');
 }, 60_000);
 
-// --- Tree view (Task 11) ------------------------------------------------------------------------------------------
+// --- Tree view ------------------------------------------------------------------------------------------
 
 /** A session on the synthetic lab (parsed once, see loadLab), opened on the Tree tab. */
 async function treeSession(view: 'tree' | 'triage' = 'tree'): Promise<LoadedCapture> {

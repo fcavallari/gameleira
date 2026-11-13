@@ -38,7 +38,7 @@ export interface Process {
   forkParent: ProcId | null;
   originalPpid: number | null; ppid: number | null;
   parentToken: TokenKey | null; responsibleToken: TokenKey | null;   // raw, latest seen
-  originalParent: ProcId | null; currentParent: ProcId | null; responsible: ProcId | null; // resolved in Task 5
+  originalParent: ProcId | null; currentParent: ProcId | null; responsible: ProcId | null; // resolved by resolveRelations
   startTime: string | null; exitTime: string | null; firstSeq: number; fileOps: FileOp[];
 }
 export interface PersistenceItem { id: string; kind: 'add' | 'remove'; plistPath: string | null;

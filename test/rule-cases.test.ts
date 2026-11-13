@@ -435,7 +435,7 @@ describe('smaller rule gaps', () => {
   });
 });
 
-describe('review follow-ups', () => {
+describe('follow-up cases: archive staging, recon, attachment', () => {
   const itemFinding = (o: Parameters<typeof persistenceItem>[0], procs: ReturnType<typeof proc>[] = []) =>
     analyze(capture(procs, [persistenceItem(o)])).queue.flatMap(q => q.findings).find(f => f.ruleId === 'persistence-item')!;
   test('a login item whose URL is the app is not called a plist, and is judged by the app\'s location', () => {
@@ -493,7 +493,7 @@ describe('review follow-ups', () => {
   });
 });
 
-describe('fix round 1', () => {
+describe('security settings, download flags, launch dirs, persistence wording, recon window', () => {
   const findingsOf = (path: string, args: string[], o: Parameters<typeof apple>[2] = {}) =>
     allFindings(analyze(capture([proc('100:1', [apple(path, args, o)])])));
   const ruleIds = (path: string, args: string[], o: Parameters<typeof apple>[2] = {}) => findingsOf(path, args, o).map(f => f.ruleId);
@@ -714,7 +714,7 @@ describe('fix round 1', () => {
   });
 });
 
-describe('fix round 2', () => {
+describe('shell-from-pipe probes, spctl wording, keychain tiers, download edge cases', () => {
   const findingsOf = (path: string, args: string[], o: Parameters<typeof apple>[2] = {}) =>
     allFindings(analyze(capture([proc('100:1', [apple(path, args, o)])])));
   const ruleIds = (path: string, args: string[], o: Parameters<typeof apple>[2] = {}) => findingsOf(path, args, o).map(f => f.ruleId);
@@ -851,7 +851,7 @@ describe('fix round 2', () => {
   });
 });
 
-describe('fix round 3', () => {
+describe('add-trusted-cert, -O/+O, spctl --disable, proxy switches, probe edge cases', () => {
   const findingsOf = (path: string, args: string[], o: Parameters<typeof apple>[2] = {}) =>
     allFindings(analyze(capture([proc('100:1', [apple(path, args, o)])])));
   const find = (id: string, path: string, args: string[]) => findingsOf(path, args).find(f => f.ruleId === id);
@@ -948,7 +948,7 @@ describe('fix round 3', () => {
   });
 });
 
-describe('fix round 4', () => {
+describe('spctl --disable naming, rule explanations, ruby and perl probes', () => {
   const findingsOf = (path: string, args: string[], o: Parameters<typeof apple>[2] = {}) =>
     allFindings(analyze(capture([proc('100:1', [apple(path, args, o)])])));
   const setting = (args: string[]) => findingsOf('/usr/sbin/spctl', ['spctl', ...args]).find(f => f.ruleId === 'security-setting-change');
