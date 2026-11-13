@@ -261,11 +261,11 @@ describe('osascript: dialogs and script sources', () => {
     expect(osa(['-e', 'display dialog "pw" default answer "" with hidden answer'])[0]!.explanation).toMatch(/hides it as dots/);
     expect(ids(osa(['-l', 'JavaScript', '-e', 'app.displayDialog("x", {defaultAnswer: "", hiddenAnswer: true})']))).toEqual(['fake-prompt']);
   });
-  test('a script file in an odd location is osascript-script, med T1059.002', () => {
+  test('a script file in an odd location is osascript-script, med, T1059.002 (T1059.007 for JavaScript)', () => {
     for (const args of [['/tmp/x.scpt'], ['-l', 'JavaScript', '/private/tmp/x.js'], ['-s', 'o', '/Users/u/Downloads/a.scpt', 'arg']]) {
       const f = osa(args).find(x => x.ruleId === 'osascript-script');
       expect(f?.severity, args.join(' ')).toBe('med');
-      expect(f?.mitre).toEqual(['T1059.002']);
+      expect(f?.mitre).toEqual(args.includes('JavaScript') ? ['T1059.007'] : ['T1059.002']);
     }
     expect(osa(['x.scpt'], { cwd: '/tmp/work' }).find(x => x.ruleId === 'osascript-script')?.evidence).toContain('/tmp/work/x.scpt');
   });
@@ -408,5 +408,63 @@ describe('smaller rule gaps', () => {
     test('an app that later exec\'d something else still launched the shell', () => expect(child([app, later])).toBe(true));
     test('a process that became an app only after the fork did not', () =>
       expect(child([apple('/bin/zsh', ['zsh'], { seq: 1 }), { ...app, seq: 10 }])).toBe(false));
+  });
+});
+
+describe('review follow-ups', () => {
+  const itemFinding = (o: Parameters<typeof persistenceItem>[0], procs: ReturnType<typeof proc>[] = []) =>
+    analyze(capture(procs, [persistenceItem(o)])).queue.flatMap(q => q.findings).find(f => f.ruleId === 'persistence-item')!;
+  test('a login item whose URL is the app is not called a plist, and is judged by the app\'s location', () => {
+    const f = itemFinding({ itemType: 2, plistPath: '/Users/Shared/Evil.app/', appPath: '/Users/Shared/Evil.app/', executablePath: null });
+    expect(f.evidence).not.toMatch(/plist/);
+    expect(f.evidence).toMatch(/^item \/Users\/Shared\/Evil\.app/);
+    expect(f.severity).toBe('high');
+    expect(f.evidence).toMatch(/high: the app is in the shared folder/);
+  });
+  test('a relative executable path is resolved against the app', () => {
+    const f = itemFinding({ itemType: 2, appPath: '/private/tmp/X.app/', executablePath: 'Contents/MacOS/X' });
+    expect(f.severity).toBe('high');
+    expect(f.evidence).toMatch(/runs \/private\/tmp\/X\.app\/Contents\/MacOS\/X/);
+  });
+  test('a relative executable with no app is not placed anywhere', () => {
+    const f = itemFinding({ itemType: 3, executablePath: 'bin/agent' });
+    expect(f.severity).toBe('med');
+    expect(f.evidence).toMatch(/med: the event names no program it can place/);
+  });
+  test('an app in /Applications that ran ad-hoc signed is high', () => {
+    const exe = '/Applications/X.app/Contents/MacOS/X';
+    const f = itemFinding({ itemType: 1, appPath: '/Applications/X.app/' }, [proc('5:1', [img({ path: exe, signingId: 'x', csFlags: 0x2 })])]);
+    expect(f.severity).toBe('high');
+  });
+
+  describe('archive-staging is not high for ordinary project folders', () => {
+    const arch = (args: string[], cwd: string) =>
+      allFindings(analyze(capture([proc('100:1', [apple(`/usr/bin/${args[0]}`, args, { cwd })])]))).find(f => f.ruleId === 'archive-staging')!;
+    test('exclude patterns and hidden project folders', () => {
+      expect(arch(['zip', '-r', 'site.zip', '.', '-x', '.git/*', '*.log'], '/Users/u/proj').severity).toBe('med');
+      expect(arch(['zip', '-r', 'x.zip', '.github'], '/Users/u/proj').severity).toBe('med');
+      expect(arch(['tar', '-czf', 'o.tgz', '--exclude=.venv/lib', 'src'], '/Users/u/proj').severity).toBe('med');
+      expect(arch(['tar', '-czf', 'o.tgz', '--exclude', '/tmp/x', 'src'], '/Users/u/proj').severity).toBe('med');
+    });
+    test('a developer tooling folder given as an absolute path is not staging', () =>
+      expect(arch(['zip', '-r', '/Users/u/proj/.git/x.zip', 'a'], '/Users/u').severity).toBe('med'));
+    test('a buried hidden folder still is', () =>
+      expect(arch(['zip', '-r', '/Users/u/Desktop/.loot/x.zip', 'a'], '/Users/u').severity).toBe('high'));
+  });
+
+  test('persistence-plist says it saw a plist written, not a registration', () => {
+    const p = proc('100:1', [apple('/bin/cp', ['cp', 'a', '/Users/u/Library/LaunchAgents/x.plist'])]);
+    p.fileOps.push({ kind: 'create', path: '/Users/u/Library/LaunchAgents/x.plist', time: 't', seq: 2 });
+    const f = analyze(capture([p])).queue[0]!.findings.find(x => x.ruleId === 'persistence-plist')!;
+    expect(f.explanation).toMatch(/^Wrote a launch agent plist/);
+    expect(f.explanation).toMatch(/No registration event/);
+  });
+
+  test('osascript -l JavaScript is JavaScript for Automation, T1059.007', () => {
+    const f = allFindings(analyze(capture([proc('100:1', [apple('/usr/bin/osascript', ['osascript', '-l', 'JavaScript', '/tmp/x.js'])])])))
+      .find(x => x.ruleId === 'osascript-script')!;
+    expect(f.mitre).toEqual(['T1059.007']);
+    expect(f.explanation).toMatch(/JavaScript/);
+    expect(f.explanation).not.toMatch(/AppleScript/);
   });
 });

@@ -10,6 +10,7 @@ export const MITRE_NAMES: Record<string, string> = {
   'T1059.002': 'AppleScript',
   'T1059.004': 'Unix Shell',
   'T1059.006': 'Python',
+  'T1059.007': 'JavaScript',
   'T1082': 'System Information Discovery',
   'T1105': 'Ingress Tool Transfer',
   'T1140': 'Deobfuscate/Decode Files or Information',

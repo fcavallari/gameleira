@@ -193,13 +193,37 @@ function tarCreates(a: string[]): boolean {
   return a.some(x => x === '--create' || /^-[A-Za-z]*c[A-Za-z]*$/.test(x)) || /^[A-Za-z]*c[A-Za-z]*$/.test(a[0] ?? '');
 }
 
-/** Paths an archiver's arguments name: plain args, `--opt=/path`, `-C/path`, relative ones joined to the working directory. */
-function argPaths(a: string[], cwd: string | null): string[] {
-  return a.map(x => {
-    if (x.startsWith('--')) return x.includes('=') ? x.slice(x.indexOf('=') + 1) : null;
-    if (x.startsWith('-')) return x.includes('/') ? x.slice(x.indexOf('/')) : null;
-    return x;
-  }).filter((x): x is string => x !== null && x !== '').map(x => resolvePath(x, cwd));
+/**
+ * Where an archiver stages its files: a strong odd location (temporary, Downloads, /Users/Shared, /Volumes,
+ * translocated, a buried hidden folder) named by an argument. Absolute paths are taken from plain args, `--opt=/path`
+ * and attached `-C/path`; a relative arg counts only when the working directory is itself a strong place (a hidden
+ * project folder such as `.github` is not staging). Exclude/include patterns (`zip -x/-i …`, `tar --exclude`) are skipped.
+ */
+function stagingPlace(a: string[], cwd: string | null): OddLocation | null {
+  const paths: string[] = [];
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    if (x === '-x' || x === '-i') {                            // zip: a list of patterns up to the next option
+      while (i + 1 < a.length && !a[i + 1]!.startsWith('-')) i++;
+      continue;
+    }
+    if (x === '--exclude' || x === '--include' || x === '-X') { i++; continue; }
+    if (/^--(?:exclude|include)=/.test(x) || /^-[xi]./.test(x)) continue;
+    if (x.startsWith('--')) { if (x.includes('=')) paths.push(x.slice(x.indexOf('=') + 1)); continue; }
+    if (x.startsWith('-')) { if (x.includes('/')) paths.push(x.slice(x.indexOf('/'))); continue; }
+    paths.push(x);
+  }
+  for (const x of paths) {
+    if (x.startsWith('/')) {
+      // The argument may be the folder itself (`-C /tmp`), so it is also checked as a folder.
+      const w = oddLocation(x) ?? strongPlace(normPath(`${x}/`));
+      if (w !== null && w.strength === 'strong') return w;
+    } else if (cwd !== null) {
+      const w = strongPlace(normPath(resolvePath(x, cwd)));
+      if (w !== null) return w;
+    }
+  }
+  return null;
 }
 
 const LAUNCH_DIR = /^(?:\/Users\/[^/]+\/Library\/LaunchAgents|\/Library\/Launch(?:Agents|Daemons))\//i;
@@ -244,6 +268,11 @@ function resolvePath(path: string, cwd: string | null): string {
  * Where osascript reads its program from, per `osascript [-l lang] [-i] [-s flags] [-e statement | programfile | -] [args]`:
  * inline (-e), a file, or stdin (no program file, or `-`).
  */
+/** osascript's language: `-l JavaScript` (JavaScript for Automation), else AppleScript. */
+function osascriptIsJs(args: string[]): boolean {
+  return args.some((a, i) => (a === '-l' && /^javascript$/i.test(args[i + 1] ?? '')) || /^-ljavascript$/i.test(a));
+}
+
 function osascriptSource(args: string[]): { kind: 'inline' } | { kind: 'stdin' } | { kind: 'file'; path: string } {
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
@@ -292,32 +321,57 @@ const APP_BUNDLE_EXE = /\.app\/Contents\/MacOS\/[^/]+$/i;
 const HOME_CACHES = /^\/Users\/[^/]+\/Library\/Caches\//i;
 
 /**
- * How bad a launch item is, from the program it runs. High when it runs a shell or interpreter, sits anywhere a
- * user process can write (temporary folders, /Users/Shared, Downloads, ~/Library/Caches, hidden folders, or a loose
- * program anywhere in a home folder), or ran unsigned or ad-hoc signed in this capture. An app bundle in a home folder
- * whose signature was not seen (a per-user updater such as GoogleUpdater) stays med, as does everything else.
+ * What a launch item runs, as an absolute path. The event's executable path is optional, and its item URL may be the app
+ * itself (a login item) or relative to the app URL; so: an absolute executable, else the executable joined to the app,
+ * else the app bundle. null when nothing can be placed.
  */
-function persistenceSeverity(exe: string | null, m: CaptureModel): { severity: Severity; reason: string } {
-  if (exe === null) return { severity: 'med', reason: 'the event names no program' };
-  const n = basename(exe);
-  if (SHELL_NAMES.has(n)) return { severity: 'high', reason: `it runs a shell (${n})` };
-  if (INTERPRETER.test(n)) return { severity: 'high', reason: `it runs a script interpreter (${n})` };
-  const p = normPath(exe);
-  const where = oddLocation(p);
-  if (where !== null) return { severity: 'high', reason: `the program is in ${LOCATION_WORDS[where.kind].long}` };
-  if (HOME_CACHES.test(p)) return { severity: 'high', reason: 'the program is in ~/Library/Caches, which the user can write to' };
+function launchTarget(item: PersistenceItem): { path: string; isApp: boolean } | null {
+  const exe = item.executablePath !== null && item.executablePath !== '' ? item.executablePath : null;
+  const app = item.appPath !== null && item.appPath.startsWith('/') ? trimSlash(item.appPath) : null;
+  if (exe !== null && exe.startsWith('/')) return { path: exe, isApp: false };
+  if (exe !== null) return app !== null ? { path: resolvePath(exe, app), isApp: false } : null;
+  return app !== null ? { path: app, isApp: true } : null;
+}
+
+/**
+ * How bad a launch item is, from what it runs. High when it runs a shell or interpreter, sits anywhere a user process
+ * can write (temporary folders, /Users/Shared, Downloads, ~/Library/Caches, hidden folders, or a loose program anywhere
+ * in a home folder), or ran unsigned or ad-hoc signed in this capture. An app bundle in a home folder whose signature
+ * was not seen (a per-user updater such as GoogleUpdater) stays med, as does everything else.
+ */
+function persistenceSeverity(target: { path: string; isApp: boolean } | null, m: CaptureModel): { severity: Severity; reason: string } {
+  if (target === null) return { severity: 'med', reason: 'the event names no program it can place' };
+  const what = target.isApp ? 'the app' : 'the program';
+  const n = basename(target.path);
+  if (!target.isApp && SHELL_NAMES.has(n)) return { severity: 'high', reason: `it runs a shell (${n})` };
+  if (!target.isApp && INTERPRETER.test(n)) return { severity: 'high', reason: `it runs a script interpreter (${n})` };
+  const p = normPath(target.path);
+  const where = oddLocation(target.isApp ? `${p}/` : p);
+  if (where !== null) return { severity: 'high', reason: `${what} is in ${LOCATION_WORDS[where.kind].long}` };
+  if (HOME_CACHES.test(p)) return { severity: 'high', reason: `${what} is in ~/Library/Caches, which the user can write to` };
   const key = p.toLowerCase();
-  const seen = [...m.processes.values()].flatMap(q => q.images).filter(i => i.path !== null && normPath(i.path).toLowerCase() === key);
+  const matches = (i: Image) => {
+    if (i.path === null) return false;
+    const ip = normPath(i.path).toLowerCase();
+    return target.isApp ? ip.startsWith(`${key}/`) : ip === key;
+  };
+  const seen = [...m.processes.values()].flatMap(q => q.images).filter(matches);
   const bad = seen.find(i => isUnsigned(i) || (!i.isPlatform && isAdhoc(i)));
-  if (bad) return { severity: 'high', reason: `the program ran ${isUnsigned(bad) ? 'unsigned' : 'ad-hoc signed'} in this capture` };
+  if (bad) return { severity: 'high', reason: `${what} ran ${isUnsigned(bad) ? 'unsigned' : 'ad-hoc signed'} in this capture` };
   if (HOME.test(p)) {
-    if (!APP_BUNDLE_EXE.test(p)) return { severity: 'high', reason: 'a loose program in a home folder, which the user (or anything running as them) can overwrite' };
+    if (!target.isApp && !APP_BUNDLE_EXE.test(p)) return { severity: 'high', reason: 'a loose program in a home folder, which the user (or anything running as them) can overwrite' };
     const team = seen.find(i => i.teamId !== null)?.teamId;
     return { severity: 'med', reason: team ? `an app bundle in a home folder, signed by team ${team}`
       : 'an app bundle in a home folder; its signature was not seen in this capture' };
   }
-  return { severity: 'med', reason: 'the program is outside temporary and user-writable folders' };
+  return { severity: 'med', reason: `${what} is outside temporary and user-writable folders` };
 }
+
+const PLIST_EXPLANATION = {
+  agent: 'Wrote a launch agent plist: once loaded, launchd starts the program it names each time a user logs in. No registration event in the capture accounts for it.',
+  daemon: 'Wrote a launch daemon plist: once loaded, launchd starts the program it names at boot, usually as root. No registration event in the capture accounts for it.',
+  any: 'Wrote a launch agent or daemon plist, which launchd runs at login or boot once loaded. No registration event in the capture accounts for it.',
+};
 
 const PERSISTENCE_EXPLANATION = 'Something registered itself to run automatically at login or boot.';
 
@@ -339,16 +393,18 @@ export const RULES: Rule[] = [
     },
   },
   {
-    id: 'osascript-script', title: 'AppleScript from a file in an odd place, or from a pipe', severity: 'med',
-    explanation: 'osascript ran an AppleScript file from a temporary, download, shared or hidden folder, or a script piped into it with no file on disk.',
-    mitre: ['T1059.002'], scope: 'image',
+    id: 'osascript-script', title: 'osascript script from a file in an odd place, or from a pipe', severity: 'med',
+    explanation: 'osascript ran a script (AppleScript, or JavaScript for Automation) from a file in a temporary, download, shared or hidden folder, or piped into it with no file on disk.',
+    mitre: ['T1059.002', 'T1059.007'], scope: 'image',
     match: ({ img }) => {
       if (basename(img.path) !== 'osascript' || !img.args) return null;
-      const src = osascriptSource(rest(img));
+      const a = rest(img);
+      const src = osascriptSource(a);
+      const lang = osascriptIsJs(a) ? { name: 'JavaScript for Automation script', mitre: ['T1059.007'] } : { name: 'AppleScript', mitre: ['T1059.002'] };
       if (src.kind === 'stdin') {
         return img.stdinIsPipe === true
-          ? { evidence: `${cmdline(img)} with stdin from a pipe`,
-            explanation: 'osascript ran an AppleScript piped into it, so there is no script file on disk to inspect.' }
+          ? { evidence: `${cmdline(img)} with stdin from a pipe`, mitre: lang.mitre,
+            explanation: `osascript ran ${lang.name === 'AppleScript' ? 'an AppleScript' : 'a JavaScript for Automation script'} piped into it, so there is no script file on disk to inspect.` }
           : null;
       }
       if (src.kind !== 'file') return null;
@@ -356,8 +412,8 @@ export const RULES: Rule[] = [
       const where = oddLocation(file);
       if (where === null || where.strength !== 'strong') return null;
       return {
-        evidence: `${cmdline(img)} (script ${file}, ${LOCATION_WORDS[where.kind].short})`,
-        explanation: `osascript ran an AppleScript file from ${LOCATION_WORDS[where.kind].long}. Malware drops scripts in places like this and runs them with osascript.`,
+        evidence: `${cmdline(img)} (script ${file}, ${LOCATION_WORDS[where.kind].short})`, mitre: lang.mitre,
+        explanation: `osascript ran ${lang.name === 'AppleScript' ? 'an AppleScript' : 'a JavaScript for Automation script'} file from ${LOCATION_WORDS[where.kind].long}. Malware drops scripts in places like this and runs them with osascript.`,
       };
     },
   },
@@ -388,14 +444,16 @@ export const RULES: Rule[] = [
     mitre: ['T1543.001', 'T1543.004', 'T1547.015'], scope: 'persistence',
     matchItem: (item, m) => {
       if (item.kind !== 'add') return null;
-      const exe = item.executablePath;
       const app = item.appPath !== null ? trimSlash(item.appPath) : null;
+      const target = launchTarget(item);
+      // The item URL is a plist only for launch agents and daemons; for a login item it is usually the app.
+      const itemPath = item.plistPath;
       const evidence = [
-        item.plistPath !== null ? `plist ${item.plistPath}` : null,
-        exe !== null ? `runs ${exe}` : null,
+        itemPath !== null ? `${/\.plist$/i.test(itemPath) ? 'plist' : 'item'} ${itemPath}` : null,
+        target !== null && !target.isApp ? `runs ${target.path}` : item.executablePath ? `runs ${item.executablePath}` : null,
         app !== null ? `app ${app}` : null,
       ].filter(Boolean).join('; ') || 'launch item with no paths';
-      const { severity, reason } = persistenceSeverity(exe, m);
+      const { severity, reason } = persistenceSeverity(target, m);
       const kind = launchKind(item.itemType, item.plistPath);
       return {
         evidence: `${evidence}; ${severity}: ${reason}`, severity, mitre: launchMitre(kind),
@@ -405,7 +463,7 @@ export const RULES: Rule[] = [
   },
   {
     id: 'persistence-plist', title: 'Launch agent/daemon plist written', severity: 'high',
-    explanation: PERSISTENCE_EXPLANATION,
+    explanation: PLIST_EXPLANATION.any,
     mitre: ['T1543.001', 'T1543.004'], scope: 'process',
     matchProcess: (p, m) => {
       const folded = new Set<string>();
@@ -425,8 +483,8 @@ export const RULES: Rule[] = [
       return {
         evidence: `wrote ${[...hits].join(', ')}`,
         mitre: [...new Set([...kinds].flatMap(launchMitre))].sort(),
-        ...(only === 'agent' ? { title: 'Launch agent plist written', explanation: LAUNCH_EXPLANATION.agent }
-          : only === 'daemon' ? { title: 'Launch daemon plist written', explanation: LAUNCH_EXPLANATION.daemon } : {}),
+        ...(only === 'agent' ? { title: 'Launch agent plist written', explanation: PLIST_EXPLANATION.agent }
+          : only === 'daemon' ? { title: 'Launch daemon plist written', explanation: PLIST_EXPLANATION.daemon } : {}),
       };
     },
   },
@@ -529,8 +587,7 @@ export const RULES: Rule[] = [
       const a = rest(img);
       const hit = (n === 'ditto' && hasShortFlag(a, 'c')) || n === 'zip' || (n === 'tar' && tarCreates(a));
       if (!hit) return null;
-      // An argument may be the folder itself (`-C /tmp`), so it is also checked as a folder against the strong places.
-      const where = argPaths(a, img.cwd).map(x => oddLocation(x) ?? strongPlace(normPath(`${x}/`))).find(w => w !== null) ?? null;
+      const where = stagingPlace(a, img.cwd);
       if (where === null) return { evidence: cmdline(img), severity: 'med' };
       return {
         evidence: `${cmdline(img)} (staged in ${LOCATION_WORDS[where.kind].short})`, severity: 'high',
