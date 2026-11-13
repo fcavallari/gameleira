@@ -1,5 +1,5 @@
 // Builds scratch/big.jsonl (gitignored): es-lab.jsonl concatenated COPIES times (default 18, ~500 MB),
-// with n * 10_000_000 added to global_seq_num in copy n, for the spec §9 large-capture check.
+// with n * 10_000_000 added to global_seq_num in copy n, for large-capture checks.
 // Usage: node scripts/make-big.mjs [path/to/es-lab.jsonl] [copies]
 // Note: every copy repeats the same pids and audit tokens, so the model sees the same
 // processes again and again; it exercises load volume, not 18x as many distinct processes.
