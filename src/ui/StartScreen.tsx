@@ -2,9 +2,9 @@ import { useState, type FormEvent } from 'react';
 import { diffExport, type ExportDiff } from '../session/export';
 import { findSavedCopy, folderSupported, permitted, type SavedCopy } from '../session/folder';
 import type { Session } from '../session/store';
-import { Canopy, RootField, TRUNKS, Wordmark } from './Brand';
+import { Canopy, RootField, RootSwatch, TRUNKS, Wordmark } from './Brand';
 import { ImportSession } from './ConfirmedTab';
-import { CaptureCommand } from './SessionScreen';
+import { CommandBlock } from './SessionScreen';
 import { StoreErrorBanner } from './StoreErrorBanner';
 import { useSession } from './session-context';
 
@@ -122,7 +122,12 @@ export function StartScreen() {
                 <p className="muted">One session per investigation, usually one Mac. Verdicts, notes and routine marks are kept
                   here; capture files are read again from disk when you reopen a session.</p>
               </div>
-              {!creating && <button className="primary accent" onClick={() => { setCreating(true); }}>New session</button>}
+              {!creating && (
+                <button className="primary accent new" onClick={() => { setCreating(true); }}>
+                  <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1v10M1 6h10" stroke="currentColor" strokeWidth="2" /></svg>
+                  New session
+                </button>
+              )}
             </div>
 
             {creating && (
@@ -133,6 +138,7 @@ export function StartScreen() {
               </form>
             )}
 
+            <div className={`spanel${c.sessions.length === 0 ? ' empty-panel' : ''}`}>
             {c.sessions.length > 0 && (
               <div className="srow shdr" aria-hidden="true"><span>Session</span><span className="num">Captures</span><span>Last updated</span><span /></div>
             )}
@@ -170,6 +176,7 @@ export function StartScreen() {
                 </li>
               ))}
             </ul>
+            </div>
             <section className="node open import" aria-labelledby="import-h">
               <div>
                 <h3 id="import-h">Import a session</h3>
@@ -179,16 +186,32 @@ export function StartScreen() {
             </section>
           </div>
 
-          <div className="howto">
-            <CaptureCommand hint="Run this on the Mac you are investigating and stop it with Ctrl-C. Then open a session and drop capture.jsonl into it." />
-          </div>
+          <section className="howto" aria-labelledby="start-h">
+            <h2 id="start-h">Start an investigation</h2>
+            <p className="muted">Gameleira reads captures made by Apple’s <span className="mono">eslogger</span>. The capture runs on the Mac
+              you are investigating, which need not be the one you are reading this on.</p>
+            <ol className="steps">
+              <li><strong>Capture on that Mac.</strong> Run the command below in its Terminal (it needs your admin password),
+                then stop it with Ctrl-C once the activity you care about has happened.</li>
+              <li><strong>Create a session</strong> for that Mac with New session.</li>
+              <li><strong>Drop capture.jsonl</strong> into the session. It is read in this browser and never uploaded.</li>
+            </ol>
+            <CommandBlock />
+            <p className="small muted events"><span className="mono">fork</span>, <span className="mono">exec</span> and <span className="mono">exit</span> build
+              the tree; <span className="mono">create</span>, <span className="mono">rename</span>, <span className="mono">unlink</span> and <span className="mono">setextattr</span> show
+              what each process wrote; <span className="mono">btm_*</span> records login items, launch agents and daemons.</p>
+          </section>
         </section>
 
         <div className="field">
           <RootField />
           <div className="ground">
             <div className="specimens">
-              {TRUNKS.map(t => <span key={t.kind} className={`specimen ${t.kind}`} style={{ left: `${t.x}%` }}>{t.label}</span>)}
+              {TRUNKS.map(t => (
+                <span key={t.kind} className={`specimen ${t.kind}`} style={{ left: `${t.x}%` }}>
+                  <RootSwatch kind={t.kind} />{t.label}
+                </span>
+              ))}
             </div>
             <p className="caption"><i>Ficus</i> spp., the gameleira: aerial roots drop from its limbs, reach the ground and become
               trunks. Gameleira follows the roots of every process, not only the one its parent PID names.</p>
