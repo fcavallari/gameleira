@@ -20,6 +20,7 @@ export const MITRE_NAMES: Record<string, string> = {
   'T1543.004': 'Launch Daemon',
   'T1547.015': 'Login Items',
   'T1548': 'Abuse Elevation Control Mechanism',
+  'T1553': 'Subvert Trust Controls',
   'T1553.001': 'Gatekeeper Bypass',
   'T1553.004': 'Install Root Certificate',
   'T1555.001': 'Keychain',

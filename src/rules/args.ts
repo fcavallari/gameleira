@@ -81,26 +81,32 @@ export interface PipeLang {
   valueOpts: string[];     // short options taking the next argument as a value
   attached: string;        // short letters that carry their value in the same argument
   probes: string[];        // arguments that only print a version or help and exit (only before the program starts)
+  probeLetters: string;    // the same, as letters inside a short cluster (`python3 -uV`, `perl -wv`)
+  probesYield: string[];   // probes that still run a script named after them: `ruby -v -` prints the version, then reads stdin
   longs: string[];         // long options known to take no value; any other long option means "can't tell"
   longValues: string[];    // long options taking the next argument as a value
 }
 /** For shells only the long forms are probes: `bash -h` is `set -h` and `zsh -V` / `dash -V` set options, and both still run piped commands. */
 const SHELL_PROBES = ['--version', '--help'];
-const INTERP_PROBES = ['--version', '--help', '-V', '-VV', '-h'];
+const SHELL_LONGS = ['--login', '--norc', '--noprofile', '--posix', '--noediting', '--restricted', '--verbose', '--no-rcs', '--no-globalrcs', '--interactive'];
+const SHELL = { mitre: 'T1059.004', inline: 'c', stdinFlag: 's', attached: '', probes: SHELL_PROBES, probeLetters: '', probesYield: [],
+  longs: SHELL_LONGS, longValues: ['--rcfile', '--init-file'] };
 export const PIPE_LANGS: [RegExp, PipeLang][] = [
-  // -c: the command is an argument; -s: read commands from stdin (the rest are positional parameters);
-  // -o/+o and bash's -O/+O take an option name.
-  [/^(?:sh|bash|zsh|dash|ksh|csh|tcsh)$/, {
-    mitre: 'T1059.004', inline: 'c', stdinFlag: 's', valueOpts: ['-o', '+o', '-O', '+O'], attached: '', probes: SHELL_PROBES,
-    longs: ['--login', '--norc', '--noprofile', '--posix', '--noediting', '--restricted', '--verbose', '--no-rcs', '--no-globalrcs', '--interactive'],
-    longValues: ['--rcfile', '--init-file'],
-  }],
-  // -c code, -m module; -W and -X take a value.
-  [/^python[0-9.]*$/, { mitre: 'T1059.006', inline: 'cm', stdinFlag: '', valueOpts: ['-W', '-X'], attached: 'WX', probes: INTERP_PROBES, longs: [], longValues: [] }],
-  // -e/-E code (also in clusters such as -ne, -0777pe); -I, -M, -m, -x, -d carry their value attached; -v prints the version.
-  [/^perl[0-9.]*$/, { mitre: 'T1059', inline: 'eE', stdinFlag: '', valueOpts: [], attached: 'IMmxd', probes: [...INTERP_PROBES, '-v'], longs: [], longValues: [] }],
-  // -e code; -I, -r, -C, -E take a value; -v prints the version.
-  [/^ruby[0-9.]*$/, { mitre: 'T1059', inline: 'e', stdinFlag: '', valueOpts: ['-I', '-r', '-C', '-E'], attached: 'IrCE', probes: [...INTERP_PROBES, '-v'], longs: [], longValues: [] }],
+  // -c: the command is an argument; -s: read commands from stdin (the rest are positional parameters); -o/+o take an
+  // option name, and in bash (macOS sh is bash) so do -O/+O. In zsh -O is a plain option letter.
+  [/^(?:sh|bash)$/, { ...SHELL, valueOpts: ['-o', '+o', '-O', '+O'] }],
+  [/^(?:zsh|dash|ksh|csh|tcsh)$/, { ...SHELL, valueOpts: ['-o', '+o'] }],
+  // -c code, -m module; -W and -X take a value; -V, -VV, -h print and exit.
+  [/^python[0-9.]*$/, { mitre: 'T1059.006', inline: 'cm', stdinFlag: '', valueOpts: ['-W', '-X'], attached: 'WX',
+    probes: ['--version', '--help', '-V', '-VV', '-h'], probeLetters: 'Vh', probesYield: [], longs: [], longValues: [] }],
+  // -e/-E code (also in clusters such as -ne, -0777pe); -I, -M, -m, -x, -d carry their value attached;
+  // -v, -V, -h print and exit (even with a `-` after them).
+  [/^perl[0-9.]*$/, { mitre: 'T1059', inline: 'eE', stdinFlag: '', valueOpts: [], attached: 'IMmxd',
+    probes: ['--version', '--help', '-V', '-h', '-v'], probeLetters: 'Vvh', probesYield: [], longs: [], longValues: [] }],
+  // -e code; -I, -r, -C, -E take a value; -h prints help; -v prints the version and exits, unless a script follows
+  // (`ruby -v -` then reads stdin). -V is not a ruby option.
+  [/^ruby[0-9.]*$/, { mitre: 'T1059', inline: 'e', stdinFlag: '', valueOpts: ['-I', '-r', '-C', '-E'], attached: 'IrCE',
+    probes: ['--version', '--help', '-h', '-v'], probeLetters: '', probesYield: ['-v'], longs: [], longValues: [] }],
 ];
 
 /**
@@ -109,11 +115,17 @@ export const PIPE_LANGS: [RegExp, PipeLang][] = [
  * only up to the first `-`, `--`, `-s` or script argument: what follows belongs to the script (`sh -s -- --version 1.2`).
  */
 export function readsStdin(lang: PipeLang, a: string[]): boolean {
+  const valueLetters = lang.attached + lang.valueOpts.map(o => o.slice(1)).join('');
+  let probe = false;                                                   // a probe that still runs a script named after it
   for (let i = 1; i < a.length; i++) {
     const x = a[i]!;
-    if (lang.probes.includes(x)) return false;
+    if (lang.probes.includes(x)) {
+      if (!lang.probesYield.includes(x)) return false;
+      probe = true;
+      continue;
+    }
     if (x === '-') return true;
-    if (x === '--') return a[i + 1] === undefined;
+    if (x === '--') return a[i + 1] === undefined && !probe;
     if (x.startsWith('--')) {
       if (lang.longValues.includes(x)) { i++; continue; }
       if (lang.longs.includes(x)) continue;
@@ -124,12 +136,14 @@ export function readsStdin(lang: PipeLang, a: string[]): boolean {
       if (lang.attached.includes(x[1]!)) continue;
       const letters = x.slice(1);
       if ([...letters].some(ch => lang.inline.includes(ch))) return false;
+      // A probe letter in a cluster (`-uV`) counts when nothing in the cluster takes a value.
+      if ([...letters].some(ch => lang.probeLetters.includes(ch)) && ![...letters].some(ch => valueLetters.includes(ch))) return false;
       if (lang.stdinFlag !== '' && letters.includes(lang.stdinFlag)) return true;
       continue;
     }
     return false;                                                       // a script file
   }
-  return true;
+  return !probe;
 }
 
 /**

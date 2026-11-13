@@ -92,6 +92,9 @@ const PROXY_SWITCHES = ['-setwebproxystate', '-setsecurewebproxystate', '-setaut
 /** networksetup options that change the configuration rather than read it. */
 const NETWORKSETUP_WRITE = /^-(?:set|create|delete|remove|add|order|switch|import|detect)/i;
 
+/** add-trusted-cert options that take a value; -d (admin) and the like do not. */
+const TRUSTED_CERT_SPEC = { shortValues: 'rpaseuktioR', longValues: [] };
+
 const MACOS15 = 'From macOS 15, spctl no longer supports changing the rule database or the global state, so there it is only an attempt.';
 
 /** A command that weakens a macOS protection or redirects traffic, with what it tried to do. */
@@ -103,14 +106,23 @@ function settingChange(n: string, a: string[], cmd: string): MatchResult | null 
         explanation: `Ran \`spctl ${off}\`, which asks macOS to turn Gatekeeper off. On macOS 14 and earlier (as root) this disables it; from macOS 15 it only reveals the "Allow applications from Anywhere" option in Privacy & Security, which someone must still pick.` };
     }
     if (off === '--disable') {
-      return { evidence: cmd, severity: 'high', mitre: ['T1562.001'], title: 'Tried to turn Gatekeeper off',
-        explanation: `Ran \`spctl --disable\`, which tries to disable Gatekeeper assessment rules (all of them, or the one named). On older macOS (as root) this stops those checks. ${MACOS15}` };
+      // A rule named by --label, --rule or a path: disabling an allow rule makes Gatekeeper stricter, disabling a deny rule looser.
+      const named = a.some(x => x === '--label' || x === '--rule' || x.startsWith('--label=') || x.startsWith('--rule=') || !x.startsWith('-'));
+      return named
+        ? { evidence: cmd, severity: 'high', mitre: ['T1562.001'], title: 'Tried to change a Gatekeeper rule',
+          explanation: `Ran \`spctl --disable\` on a named Gatekeeper rule. Disabling a rule that allows software makes Gatekeeper stricter; disabling one that blocks software lets it through. Check which rule it named. ${MACOS15}` }
+        : { evidence: cmd, severity: 'high', mitre: ['T1562.001'], title: 'Tried to disable Gatekeeper rules',
+          explanation: `Ran \`spctl --disable\` with no rule named, which tries to disable Gatekeeper's assessment rules; on older macOS (as root) this stopped the checks. ${MACOS15}` };
     }
     if (a.includes('--add')) {
       return { evidence: cmd, severity: 'high', mitre: ['T1553.001'], title: 'Tried to add a Gatekeeper exception',
         explanation: `Ran \`spctl --add\`, which tries to add a Gatekeeper rule so the named app passes without the usual check. On older macOS (as root) this works. ${MACOS15}` };
     }
     return null;
+  }
+  if (n === 'csrutil' && a.includes('enable') && a.includes('--without')) {
+    return { evidence: cmd, severity: 'high', mitre: ['T1562.001'], title: 'Tried to turn off part of System Integrity Protection',
+      explanation: 'Ran `csrutil enable --without …`, which leaves System Integrity Protection on but turns off the protections it names. It only works from Recovery; seeing it on a normal boot means an attempt.' };
   }
   if (n === 'csrutil' && a.includes('disable')) {
     const root = a.includes('authenticated-root');
@@ -121,13 +133,20 @@ function settingChange(n: string, a: string[], cmd: string): MatchResult | null 
   if (n === 'security') {
     const s = securityArgs(a);
     if (s?.sub === 'add-trusted-cert') {
-      const root = s.rest.includes('trustRoot') || hasShortFlag(s.rest, 'd');
-      return { evidence: cmd, severity: 'high', mitre: ['T1553.004'], title: 'Certificate trusted',
-        explanation: `Ran \`security add-trusted-cert\`, which marks a certificate as trusted${root ? ' (here as a trusted root, or in the admin trust settings for every user)' : ''}. A trusted root lets whoever holds its key intercept HTTPS traffic or sign things the Mac will accept.` };
+      // -r sets the trust result; with none given it is trustRoot (`security add-trusted-cert -h`).
+      const results = parseOpts(s.rest, TRUSTED_CERT_SPEC).shorts.filter(o => o.opt === 'r').map(o => o.value ?? '');
+      const admin = hasShortFlag(s.rest, 'd') ? ', in the admin trust settings (every user)' : '';
+      const hedge = ' Changing trust settings needs an administrator\'s interactive approval on current macOS, so this may only be an attempt.';
+      if (results.length > 0 && results.every(r => r === 'deny' || r === 'unspecified')) {
+        return { evidence: cmd, severity: 'med', mitre: ['T1553'], title: 'Tried to change a certificate\'s trust settings',
+          explanation: `Ran \`security add-trusted-cert -r ${results.join('/')}\`, which sets a certificate's trust to ${results.join(' or ')}${admin} rather than trusting it.${hedge}` };
+      }
+      return { evidence: cmd, severity: 'high', mitre: ['T1553.004'], title: 'Tried to trust a certificate',
+        explanation: `Ran \`security add-trusted-cert\`, which marks a certificate as a trusted root${admin}. A trusted root lets whoever holds its key intercept HTTPS traffic or sign things the Mac will accept.${hedge}` };
     }
     if (s?.sub === 'authorizationdb' && s.rest[0] === 'write') {
-      return { evidence: cmd, severity: 'med', mitre: ['T1548'], title: 'Authorization rule changed',
-        explanation: 'Ran `security authorizationdb write`, which changes an authorization rule: who may do what, and whether a password is asked for. Malware loosens these rules to get admin rights without asking.' };
+      return { evidence: cmd, severity: 'med', mitre: ['T1548'], title: 'Tried to change an authorization rule',
+        explanation: 'Ran `security authorizationdb write`, which changes an authorization rule: who may do what, and whether a password is asked for. Malware loosens these rules to get admin rights without asking. Writing the rules needs admin rights, so this may only be an attempt.' };
     }
     return null;
   }
@@ -140,10 +159,13 @@ function settingChange(n: string, a: string[], cmd: string): MatchResult | null 
       return { evidence: cmd, severity: 'med', mitre: ['T1557'], title: 'Web proxy or DNS changed',
         explanation: `Changed the ${NETWORK_REDIRECTS[flag.toLowerCase()]} with \`networksetup ${flag}\`, which redirects web or DNS traffic through a server someone chose. A common adware trick.` };
     }
+    // `-setwebproxystate <service> on|off`: the value is the argument after the service name.
     const sw = a.find(x => PROXY_SWITCHES.includes(x.toLowerCase()));
-    if (sw !== undefined && a.slice(a.indexOf(sw) + 1).some(v => /^on$/i.test(v))) {
+    if (sw !== undefined && /^on$/i.test(a[a.indexOf(sw) + 2] ?? '')) {
       return { evidence: cmd, severity: 'med', mitre: ['T1557'], title: 'Proxy setting turned on',
-        explanation: `Turned a proxy setting on with \`networksetup ${sw} … on\`, so web traffic goes through whatever proxy is configured. A common adware trick.` };
+        explanation: sw.toLowerCase() === '-setproxyautodiscovery'
+          ? 'Turned a proxy setting on with `networksetup -setproxyautodiscovery … on`: web traffic then uses whatever proxy the network advertises (WPAD), which an attacker on the network can set.'
+          : `Turned a proxy setting on with \`networksetup ${sw} … on\`, so web traffic goes through whatever proxy is configured. A common adware trick.` };
     }
   }
   return null;
@@ -195,7 +217,9 @@ function keychainFinding(args: string[]): MatchResult | null {
       || ((services.length === 0 || safeService) && vals('a').some(v => BROWSER_ACCOUNT.test(v)));
     if (browser) {
       return { evidence: '', severity: 'high',
-        explanation: `Printed a browser's Safe Storage key with \`${cmd}\`. That key decrypts the browser's saved passwords and cookies; stealers grab it first.` };
+        explanation: safeService || vals('l').some(v => SAFE_STORAGE.test(v))
+          ? `Printed an app's Safe Storage encryption key with \`${cmd}\` (browsers and Electron apps keep their saved passwords and cookies behind it). Stealers grab these keys first.`
+          : `Printed a browser's Safe Storage key with \`${cmd}\` (the browser named as the account). That key decrypts the browser's saved passwords and cookies; stealers grab it first.` };
     }
     if (names.some(v => WALLET.test(v))) {
       return { evidence: '', severity: 'high',
@@ -456,8 +480,8 @@ export const RULES: Rule[] = [
   },
   {
     id: 'security-setting-change', title: 'Security setting changed', severity: 'high',
-    explanation: 'Tried to weaken a macOS protection: turn Gatekeeper off or add an exception (spctl --master-disable, --global-disable, --disable, --add), turn System Integrity Protection off (csrutil disable, csrutil authenticated-root disable), trust a root certificate (security add-trusted-cert), or change an authorization rule (security authorizationdb write); or pointed web or DNS traffic elsewhere (networksetup -setwebproxy, -setsecurewebproxy, -setautoproxyurl, -setsocksfirewallproxy, -setdnsservers, or switching a proxy on).',
-    mitre: ['T1562.001', 'T1553.001', 'T1553.004', 'T1548', 'T1557'], scope: 'image',
+    explanation: 'Tried to weaken a macOS protection: turn Gatekeeper off or add an exception (spctl --master-disable, --global-disable, --disable, --add), turn System Integrity Protection off in whole or part (csrutil disable, csrutil authenticated-root disable, csrutil enable --without), trust a root certificate or change the trust settings of a certificate (security add-trusted-cert), or change an authorization rule (security authorizationdb write); or pointed web or DNS traffic elsewhere (networksetup -setwebproxy, -setsecurewebproxy, -setautoproxyurl, -setsocksfirewallproxy, -setdnsservers, or switching a proxy on).',
+    mitre: ['T1562.001', 'T1553.001', 'T1553.004', 'T1553', 'T1548', 'T1557'], scope: 'image',
     match: ({ img }) => settingChange(basename(img.path), rest(img), cmdline(img)),
   },
   {
@@ -565,7 +589,7 @@ export const RULES: Rule[] = [
   },
   {
     id: 'shell-from-pipe', title: 'Shell or interpreter reading commands from a pipe', severity: 'med',
-    explanation: "A shell, or python, perl or ruby, ran commands piped into it (the `curl … | bash` pattern), so there's no script file on disk to inspect. Version and help probes before the script starts do not count: --version and --help, and for python, perl and ruby also -V, -VV, -h (and perl/ruby -v).",
+    explanation: "A shell, or python, perl or ruby, ran commands piped into it (the `curl … | bash` pattern), so there's no script file on disk to inspect. Version and help probes before the script starts do not count: --version and --help; for python also -V, -VV, -h; for perl -v, -V, -h; for ruby -v (unless a script follows) and -h.",
     mitre: ['T1059.004', 'T1059.006', 'T1059'], scope: 'image',
     match: ({ p, img, imgIndex }) => {
       const lang = pipeLang(img);

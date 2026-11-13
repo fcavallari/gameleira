@@ -740,7 +740,8 @@ describe('fix round 2', () => {
     test('the explanation does not call -h or -V a shell probe', () => {
       const r = RULES.find(x => x.id === 'shell-from-pipe')!;
       expect(r.explanation).toMatch(/--version/);
-      expect(r.explanation).toMatch(/python, perl and ruby/);
+      expect(r.explanation).toMatch(/for python also -V, -VV, -h/);
+      expect(r.explanation).not.toMatch(/ruby[^.;]*-V/);
     });
   });
 
@@ -844,5 +845,102 @@ describe('fix round 2', () => {
     cat.fileOps.push({ kind: 'create', path: '/Users/u/Library/LaunchAgents/Com.Evil.plist', time: 't', seq: 4 });
     const a = analyze(capture([cat], [persistenceItem({ itemType: 3, plistPath: '/users/u/library/launchagents/com.evil.plist', executablePath: '/bin/sh', creator: '902:1' })]));
     expect(a.queue[0]!.findings.map(f => f.ruleId)).toEqual(['persistence-item']);
+  });
+});
+
+describe('fix round 3', () => {
+  const findingsOf = (path: string, args: string[], o: Parameters<typeof apple>[2] = {}) =>
+    allFindings(analyze(capture([proc('100:1', [apple(path, args, o)])])));
+  const find = (id: string, path: string, args: string[]) => findingsOf(path, args).find(f => f.ruleId === id);
+  const setting = (path: string, args: string[]) => find('security-setting-change', path, args);
+
+  describe('add-trusted-cert and authorizationdb are worded as attempts', () => {
+    const cert = (...a: string[]) => setting('/usr/bin/security', ['security', 'add-trusted-cert', ...a, 'ca.pem']);
+    test('no -r defaults to trustRoot: high, trusted-root clause', () => {
+      const f = cert()!;
+      expect(f.severity).toBe('high');
+      expect(f.title).toBe('Tried to trust a certificate');
+      expect(f.explanation).toMatch(/trusted root/);
+      expect(f.explanation).toMatch(/administrator/);
+    });
+    test('-r trustRoot and trustAsRoot are high', () => {
+      expect(cert('-r', 'trustRoot')!.severity).toBe('high');
+      expect(cert('-r', 'trustAsRoot')!.severity).toBe('high');
+    });
+    test('-r deny and -r unspecified are a med trust-settings change, not trust', () => {
+      for (const r of ['deny', 'unspecified']) {
+        const f = cert('-r', r)!;
+        expect(f.severity, r).toBe('med');
+        expect(f.title).toBe("Tried to change a certificate's trust settings");
+        expect(f.explanation).not.toMatch(/marks a certificate as trusted/);
+        expect(f.mitre).toEqual(['T1553']);
+      }
+    });
+    test('authorizationdb write title', () =>
+      expect(setting('/usr/bin/security', ['security', 'authorizationdb', 'write', 'x', 'allow'])!.title).toBe('Tried to change an authorization rule'));
+  });
+
+  describe('-O/+O take a value only for bash and sh', () => {
+    const fires = (path: string, args: string[]) => findingsOf(path, args, { stdinIsPipe: true }).some(f => f.ruleId === 'shell-from-pipe');
+    test('zsh -O s.sh runs a file; zsh -O -s reads stdin', () => {
+      expect(fires('/bin/zsh', ['zsh', '-O', 's.sh'])).toBe(false);
+      expect(fires('/bin/zsh', ['zsh', '-O', '-s', '--', 'x'])).toBe(true);
+    });
+    test('bash -O extglob still reads stdin', () => expect(fires('/bin/bash', ['bash', '-O', 'extglob'])).toBe(true));
+  });
+
+  describe('spctl --disable', () => {
+    test('a named rule is a rule change, both directions explained', () => {
+      for (const args of [['spctl', '--disable', '--label', 'Developer ID'], ['spctl', '--disable', '--rule', '42'], ['spctl', '--disable', '/Applications/X.app']]) {
+        const f = setting('/usr/sbin/spctl', args)!;
+        expect(f.title, args.join(' ')).toBe('Tried to change a Gatekeeper rule');
+        expect(f.explanation).toMatch(/stricter/);
+        expect(f.explanation).not.toMatch(/turn Gatekeeper off/);
+      }
+    });
+    test('only --master-disable and --global-disable say turn Gatekeeper off', () => {
+      expect(setting('/usr/sbin/spctl', ['spctl', '--disable'])!.title).not.toMatch(/turn Gatekeeper off/);
+      expect(setting('/usr/sbin/spctl', ['spctl', '--master-disable'])!.title).toBe('Tried to turn Gatekeeper off');
+    });
+  });
+
+  describe('proxy switches read the value after the service', () => {
+    test('a service named On does not fire', () =>
+      expect(setting('/usr/sbin/networksetup', ['networksetup', '-setwebproxystate', 'On', 'off'])).toBeUndefined());
+    test('WPAD wording', () =>
+      expect(setting('/usr/sbin/networksetup', ['networksetup', '-setproxyautodiscovery', 'Wi-Fi', 'on'])!.explanation).toMatch(/WPAD/));
+  });
+
+  test('any Safe Storage key is described as an app\'s encryption key', () => {
+    const f = find('keychain-access', '/usr/bin/security', ['security', 'find-generic-password', '-w', '-s', 'Slack Safe Storage'])!;
+    expect(f.severity).toBe('high');
+    expect(f.explanation).toMatch(/an app's Safe Storage encryption key/);
+    expect(f.explanation).toMatch(/Electron/);
+  });
+
+  describe('probe edge cases', () => {
+    const fires = (path: string, args: string[]) => findingsOf(path, args, { stdinIsPipe: true }).some(f => f.ruleId === 'shell-from-pipe');
+    test('ruby -V and -VV are not probes', () => {
+      expect(fires('/usr/bin/ruby', ['ruby', '-V'])).toBe(true);
+      expect(fires('/usr/bin/ruby', ['ruby', '-VV'])).toBe(true);
+    });
+    test('probe letters inside python and perl clusters', () => {
+      expect(fires('/usr/bin/python3', ['python3', '-uV'])).toBe(false);
+      expect(fires('/usr/bin/perl', ['perl', '-wv'])).toBe(false);
+      expect(fires('/usr/bin/python3', ['python3', '-u'])).toBe(true);
+    });
+    test('ruby -v - reads the piped script; perl -v - does not (perl prints and exits)', () => {
+      expect(fires('/usr/bin/ruby', ['ruby', '-v', '-'])).toBe(true);
+      expect(fires('/usr/bin/ruby', ['ruby', '-v'])).toBe(false);
+      expect(fires('/usr/bin/perl', ['perl', '-v', '-'])).toBe(false);
+    });
+  });
+
+  test('csrutil enable --without is a partial SIP disable, high, hedged', () => {
+    const f = setting('/usr/bin/csrutil', ['csrutil', 'enable', '--without', 'debug'])!;
+    expect(f.severity).toBe('high');
+    expect(f.mitre).toEqual(['T1562.001']);
+    expect(f.explanation).toMatch(/Recovery/);
+    expect(setting('/usr/bin/csrutil', ['csrutil', 'enable'])).toBeUndefined();
   });
 });
