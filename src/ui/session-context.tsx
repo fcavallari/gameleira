@@ -7,10 +7,11 @@ import { basename, latestImage } from '../model/util';
 import { SEVERITY_RANK, type Severity } from '../rules/rules';
 import type { QueueItem } from '../rules/engine';
 import { importSession } from '../session/export';
+import { evictLru, MAX_LOADED_BYTES, touch } from '../session/lru';
 import { applyRoutine, isRiskyRoutine, NO_IDENTITY, programKey, routineImpact, type RoutineResult } from '../session/routine';
 import type { CaptureRec, RoutineRec, Session, Status, Store, Verdict } from '../session/store';
 import { fetchDevFixture } from './dev';
-import { DEFAULT_FILTERS, type TriageFilters } from './triage-model';
+import { DEFAULT_FILTERS, toggleStatus, type TriageFilters } from './triage-model';
 
 export type View = 'triage' | 'tree' | 'confirmed';
 export interface Progress { fileName: string; bytes: number; total: number }
@@ -52,6 +53,8 @@ export interface SessionCtx {
   /** The active capture's queue with routine programs removed, and how many were hidden. */
   triage: RoutineResult | null;
   selected: ProcId | null;
+  /** The queue key (`i:<id>`) of the selected persistence-only item, which has no ProcId. At most one of this and `selected` is set. */
+  selectedItem: string | null;
   /** The process "Show in tree" asked for, until the user picks another one. */
   focusId: ProcId | null;
   /** Changes on every showInTree call, so asking for the same process again is seen. */
@@ -72,10 +75,19 @@ export interface SessionCtx {
    * was started, like a note, must pass the capture it began under: the active capture may have changed since.
    */
   setVerdict(procId: ProcId, status: Status, note?: string, fingerprint?: string): Promise<void>;
+  /**
+   * Pressing Confirm or Benign: sets it, or takes it back to unreviewed when the verdict already has it. The current
+   * status is read when the call runs (not from what is rendered, which can lag a write that has not finished).
+   */
+  toggleVerdict(procId: ProcId, pressed: 'confirmed' | 'benign', fingerprint?: string): Promise<void>;
+  /** Saves a note and nothing else: the status is whatever the verdict has when the write runs. */
+  setNote(procId: ProcId, note: string, fingerprint: string): Promise<void>;
   /** Resolves false when refused (no program identity) or declined at the risky-program prompt. */
   addRoutine(img: Image): Promise<boolean>;
   removeRoutine(key: string): Promise<void>;
   selectProc(id: ProcId | null): void;
+  /** Selects a persistence-only item by its queue key. */
+  selectItem(key: string): void;
   showInTree(id: ProcId): void;
 }
 
@@ -90,7 +102,8 @@ export function useSession(): SessionCtx {
 const now = (): string => new Date().toISOString();
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-export function SessionProvider({ store, children }: { store: Store; children: ReactNode }) {
+/** `maxLoadedBytes` is a test seam: the budget for parsed captures kept in memory (default 300 MB of input files). */
+export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, children }: { store: Store; maxLoadedBytes?: number; children: ReactNode }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const [storeError, setStoreError] = useState<string | null>(null);
@@ -104,6 +117,7 @@ export function SessionProvider({ store, children }: { store: Store; children: R
   const [allVerdicts, setAllVerdicts] = useState<Verdict[]>([]);
   const [routine, setRoutine] = useState<RoutineRec[]>([]);
   const [selected, setSelected] = useState<ProcId | null>(null);
+  const [selectedItem, setSelectedItem] = useState<string | null>(null);
   const [focus, setFocus] = useState<{ id: ProcId; n: number } | null>(null);
   const [triageFilters, setTriageFilters] = useState<TriageFilters>(DEFAULT_FILTERS);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -117,6 +131,8 @@ export function SessionProvider({ store, children }: { store: Store; children: R
   /** Session verdicts, updated synchronously so two calls in one tick see each other. */
   const verdictRef = useRef<Verdict[]>([]);
   const queue = useRef<Promise<void>>(Promise.resolve());
+  /** Verdict writes run one after another in the order they were made, so an older write can never land last. */
+  const writes = useRef<Promise<unknown>>(Promise.resolve());
   const latest = useRef({ session, capRecs, captures, active, allVerdicts, routine });
   latest.current = { session, capRecs, captures, active, allVerdicts, routine };
 
@@ -161,9 +177,10 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     openToken.current++;
     gen.current++;
     queue.current = Promise.resolve();
+    writes.current = Promise.resolve();
     verdictRef.current = [];
     setSession(null); setCapRecs([]); setCaptures(new Map()); setActiveFp(null); setView('triage');
-    setAllVerdicts([]); setRoutine([]); setSelected(null); setFocus(null); setTriageFilters(DEFAULT_FILTERS); setProgress(null); setLoadError(null);
+    setAllVerdicts([]); setRoutine([]); setSelected(null); setSelectedItem(null); setFocus(null); setTriageFilters(DEFAULT_FILTERS); setProgress(null); setLoadError(null);
     void refreshSessions();
   }, [refreshSessions]);
 
@@ -179,10 +196,11 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     if (token !== openToken.current) return;
     gen.current++;   // loads still running for the previous session are now stale
     queue.current = Promise.resolve();   // …and the new session's loads must not wait for them
+    writes.current = Promise.resolve();
     sessionId.current = id;
     verdictRef.current = vs;
     setSession(s); setCapRecs(recs); setAllVerdicts(vs); setRoutine(rs);
-    setCaptures(new Map()); setActiveFp(null); setView('triage'); setSelected(null); setFocus(null); setTriageFilters(DEFAULT_FILTERS); setProgress(null); setLoadError(null);
+    setCaptures(new Map()); setActiveFp(null); setView('triage'); setSelected(null); setSelectedItem(null); setFocus(null); setTriageFilters(DEFAULT_FILTERS); setProgress(null); setLoadError(null);
   }, [store, report]);
 
   const renameSession = useCallback(async (id: string, name: string) => {
@@ -222,9 +240,10 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     const recs = await store.listCaptures(sid);
     if (!live()) return;
     setCapRecs(recs);
-    setCaptures(m => new Map(m).set(cap.fingerprint, cap));
+    setCaptures(m => touch(m, cap.fingerprint, cap));
     setActiveFp(cap.fingerprint);
     setSelected(null);
+    setSelectedItem(null);
     setFocus(null);
   }, [store]);
 
@@ -262,14 +281,24 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     })().catch(e => { setLoadError(message(e)); });
   }, [store, openSession, loadFiles]);
 
-  const setActive = useCallback((fp: string) => { setActiveFp(fp); setSelected(null); setFocus(null); }, []);
-  const selectProc = useCallback((id: ProcId | null) => { setSelected(id); setFocus(null); }, []);
+  const setActive = useCallback((fp: string) => {
+    setActiveFp(fp); setSelected(null); setSelectedItem(null); setFocus(null);
+    setCaptures(m => touch(m, fp));   // on screen = recently used
+  }, []);
+  const selectProc = useCallback((id: ProcId | null) => { setSelected(id); setSelectedItem(null); setFocus(null); }, []);
+  const selectItem = useCallback((key: string) => { setSelected(null); setSelectedItem(key); setFocus(null); }, []);
   const showInTree = useCallback((id: ProcId) => {
     setSelected(id);
+    setSelectedItem(null);
     setFocus(f => ({ id, n: (f?.n ?? 0) + 1 }));
     setView('tree');
   }, []);
   const updateTriageFilters = useCallback((patch: Partial<TriageFilters>) => { setTriageFilters(f => ({ ...f, ...patch })); }, []);
+
+  // Drop the least recently used captures once the loaded ones outgrow the budget. This is an effect, not part of the
+  // load: a note field that unmounts because the active capture changed saves in that same commit's cleanup, and it
+  // must still find the capture it was typed on.
+  useEffect(() => { setCaptures(m => evictLru(m, active, maxLoadedBytes)); }, [captures, active, maxLoadedBytes]);
 
   const capture = active ? captures.get(active) ?? null : null;
   const verdicts = useMemo(
@@ -280,33 +309,43 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     () => (capture ? applyRoutine(capture.analysis, capture.model, routineKeys) : null),
     [capture, routineKeys]);
 
-  const setVerdict = useCallback(async (procId: ProcId, status: Status, note?: string, fingerprint?: string) => {
+  /**
+   * Every verdict write goes through here. `change` gets the verdict as it is when the write runs (verdictRef is updated
+   * synchronously, so two calls in one tick see each other) and returns the status and note to store.
+   */
+  const save = useCallback(async (
+    procId: ProcId, fingerprint: string | undefined, change: (prev: Verdict | undefined) => { status: Status; note: string },
+  ): Promise<void> => {
     const { session: s, active, captures: caps } = latest.current;
     const fp = fingerprint ?? active;
     const cap = fp ? caps.get(fp) : undefined;
     const p = cap?.model.processes.get(procId);
     const queued = cap?.analysis.queue.find(q => q.key === procId);
     const item = !p && queued?.persistenceId != null ? cap?.model.persistence.find(i => i.id === queued.persistenceId) : undefined;
-    if (!s || !fp || !cap || (!p && !item)) return;
-    const img = p ? latestImage(p) : undefined;
-    const findings = p ? cap.analysis.findings.get(procId) ?? [] : queued?.findings ?? [];
-    const severity = findings.reduce<Severity | null>(
-      (best, f) => (best === null || SEVERITY_RANK[f.severity] > SEVERITY_RANK[best] ? f.severity : best), null);
     const same = (x: Verdict) => x.fingerprint === fp && x.procKey === procId;
     const prev = verdictRef.current.find(same);
-    const v: Verdict = {
-      sessionId: s.id, fingerprint: fp, procKey: procId, status, note: note ?? prev?.note ?? '', updated: now(),
-      snapshot: {
+    if (!s || !fp) return;
+    let snapshot = prev?.snapshot;   // a capture that is no longer loaded still has the snapshot its verdict was saved with
+    if (cap && (p || item)) {
+      const img = p ? latestImage(p) : undefined;
+      const findings = p ? cap.analysis.findings.get(procId) ?? [] : queued?.findings ?? [];
+      const severity = findings.reduce<Severity | null>(
+        (best, f) => (best === null || SEVERITY_RANK[f.severity] > SEVERITY_RANK[best] ? f.severity : best), null);
+      snapshot = {
         name: p ? displayName(cap.model, procId) : `persistence: ${basename(item?.plistPath ?? null) || procId}`,
         path: p ? img?.path ?? null : item?.executablePath ?? null, args: img?.args ?? null,
         ruleIds: [...new Set(findings.map(f => f.ruleId))], severity, startTime: p ? p.startTime : item?.time ?? null,
-      },
-    };
+      };
+    }
+    if (!snapshot) return;
+    const v: Verdict = { sessionId: s.id, fingerprint: fp, procKey: procId, ...change(prev), updated: now(), snapshot };
     // Synchronous, so a second call in the same tick sees this verdict (and its note); undone if the write fails.
     verdictRef.current = [...verdictRef.current.filter(x => !same(x)), v];
     const open = () => sessionId.current === s.id;
     try {
-      await store.setVerdict(v);
+      const done = writes.current.then(() => store.setVerdict(v));
+      writes.current = done.catch(() => { /* reported below, by the call that made it */ });
+      await done;
     } catch (e) {
       if (open()) {
         if (verdictRef.current.includes(v)) {
@@ -323,6 +362,19 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     }
     store.touchSession(s.id).catch(() => { /* best-effort: only the "updated" time is lost */ });
   }, [store, report]);
+
+  const setVerdict = useCallback(
+    (procId: ProcId, status: Status, note?: string, fingerprint?: string) =>
+      save(procId, fingerprint, prev => ({ status, note: note ?? prev?.note ?? '' })),
+    [save]);
+  const toggleVerdict = useCallback(
+    (procId: ProcId, pressed: 'confirmed' | 'benign', fingerprint?: string) =>
+      save(procId, fingerprint, prev => ({ status: toggleStatus(prev?.status ?? 'unreviewed', pressed), note: prev?.note ?? '' })),
+    [save]);
+  const setNote = useCallback(
+    (procId: ProcId, note: string, fingerprint: string) =>
+      save(procId, fingerprint, prev => ({ status: prev?.status ?? 'unreviewed', note })),
+    [save]);
 
   const addRoutine = useCallback(async (img: Image): Promise<boolean> => {
     const sid = sessionId.current;
@@ -358,8 +410,8 @@ export function SessionProvider({ store, children }: { store: Store; children: R
   const value: SessionCtx = {
     store, sessions, sessionsLoaded, captureCounts, persisted, storeError, dismissStoreError, createSession, renameSession, deleteSession, importSessionFile,
     session, capRecs, captures, active, capture, view, allVerdicts, verdicts, routine, routineKeys, triage,
-    selected, focusId: focus?.id ?? null, focusNonce: focus?.n ?? 0, triageFilters, updateTriageFilters, progress, loadError, openSession, closeSession, loadFiles, setActive, setView,
-    setVerdict, addRoutine, removeRoutine, selectProc, showInTree,
+    selected, selectedItem, focusId: focus?.id ?? null, focusNonce: focus?.n ?? 0, triageFilters, updateTriageFilters, progress, loadError, openSession, closeSession, loadFiles, setActive, setView,
+    setVerdict, toggleVerdict, setNote, addRoutine, removeRoutine, selectProc, selectItem, showInTree,
   };
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }

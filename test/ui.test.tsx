@@ -18,7 +18,7 @@ import { App, SessionContext, SessionProvider, useSession, type SessionCtx } fro
 import { SessionScreen } from '../src/ui/SessionScreen';
 import { TreeView } from '../src/ui/TreeView';
 import { TriageView } from '../src/ui/TriageView';
-import { DEFAULT_FILTERS, type TriageFilters } from '../src/ui/triage-model';
+import { DEFAULT_FILTERS, toggleStatus, type TriageFilters } from '../src/ui/triage-model';
 import { applyRoutine, keepReason, programKey } from '../src/session/routine';
 import { procByPid } from './helpers';
 import { StoreErrorBanner } from '../src/ui/StoreErrorBanner';
@@ -508,21 +508,135 @@ test('two setVerdict calls in one tick keep the note', async () => {
   expect(ctx.verdicts.get(procId)).toMatchObject({ status: 'benign', note: 'dropper' });
 });
 
+// --- fix: loaded-capture budget, writes that read the verdict when they run -----------------------------------------
+
+/** The session screen once a session is open (it assumes one). */
+function Gate() { return useSession().session ? <SessionScreen /> : null; }
+
+async function openWith(store: Store, maxLoadedBytes?: number): Promise<string> {
+  const s = await store.createSession('ctx');
+  render(<SessionProvider store={store} maxLoadedBytes={maxLoadedBytes}><Probe /><Gate /></SessionProvider>);
+  await waitFor(() => { expect(ctx).toBeDefined(); });
+  await act(async () => { await ctx.openSession(s.id); });
+  return s.id;
+}
+const drop = (name: FixtureName): Promise<void> => act(async () => { await ctx.loadFiles([dropped(name)]); });
+
+test('loaded captures stay within the budget: the least recently used goes, the active one never does', async () => {
+  const store = await openStore();
+  await openWith(store, 3_300_000);   // shlayer 1.78 MB + atomic 1.45 MB fit; a third does not
+  await drop('shlayer.json');
+  const shlayer = ctx.active!;
+  await drop('atomic_stealer.json');
+  const atomic = ctx.active!;
+  expect([...ctx.captures.keys()]).toEqual([shlayer, atomic]);
+  act(() => { ctx.setActive(shlayer); });   // shlayer is now the most recently used
+  await drop('spritetree_demo.json');
+  const sprite = ctx.active!;
+  expect([...ctx.captures.keys()].sort()).toEqual([shlayer, sprite].sort());   // atomic went, not shlayer
+  expect(ctx.capRecs).toHaveLength(3);   // still recorded: only the parsed copy is dropped
+  expect(await screen.findByText('Re-add atomic_stealer.json to continue')).toBeInTheDocument();
+  expect(ctx.capture).not.toBeNull();
+}, 60_000);
+
+test('a capture that alone is over the budget is kept while it is on screen', async () => {
+  await openWith(await openStore(), 1000);
+  await drop('shlayer.json');
+  expect(ctx.captures.size).toBe(1);
+  expect(ctx.capture).not.toBeNull();
+}, 60_000);
+
+test('a note typed on a capture that then gets evicted is still saved to it', async () => {
+  const store = await openStore();
+  const sid = await openWith(store, 2_500_000);   // two of the three do not fit together
+  await drop('shlayer.json');
+  const a = ctx.active!;
+  await user.click(await firstQueueRow());
+  await user.type(screen.getByLabelText(/note/i), 'typed before the eviction');
+  await drop('atomic_stealer.json');   // evicts shlayer, and unmounts the note field that has not saved yet
+  expect(ctx.captures.has(a)).toBe(false);
+  await waitFor(async () => { expect(await store.listVerdicts(sid, a)).toMatchObject([{ note: 'typed before the eviction', status: 'unreviewed' }]); });
+}, 60_000);
+
+/** A store whose first verdict write waits for `release()`; later writes are applied in the order they were issued. */
+async function heldStore(): Promise<{ store: Store; real: Store; release(): void; writes: string[] }> {
+  const real = await openStore();
+  let release!: () => void;
+  const gate = new Promise<void>(r => { release = r; });
+  const writes: string[] = [];
+  let n = 0;
+  const store = new Proxy(real, {
+    get: (t, k: string) => (k === 'setVerdict'
+      ? async (v: Verdict) => {
+        if (n++ === 0) await gate;
+        writes.push(`${v.status}:${v.note}`);
+        return t.setVerdict(v);
+      }
+      : t[k as keyof Store]),
+  });
+  return { store, real, release, writes };
+}
+/** The first row of the queue (the capture drop-down has options too, so the list is picked by its role). */
+const firstQueueRow = async (): Promise<HTMLElement> => within(await screen.findByRole('listbox', { name: /flagged/i })).getAllByRole('option')[0]!;
+const firstProc = (): string => ctx.capture!.analysis.queue.find(q => q.kind === 'process')!.procId!;
+
+test('a note saved while a verdict write is still held keeps the verdict, and the store ends on the last write', async () => {
+  const { store, real, release, writes } = await heldStore();
+  const sid = await openWith(store);
+  await drop('shlayer.json');
+  const id = firstProc();
+  const fp = ctx.active!;
+  await act(async () => {
+    const confirm = ctx.toggleVerdict(id, 'confirmed');   // the store holds this write
+    const note = ctx.setNote(id, 'dropper', fp);          // the rendered status is still "unreviewed"; the verdict is not
+    release();
+    await Promise.all([confirm, note]);
+  });
+  expect(await real.listVerdicts(sid, fp)).toMatchObject([{ status: 'confirmed', note: 'dropper' }]);
+  expect(writes).toEqual(['confirmed:', 'confirmed:dropper']);   // in order: the older write cannot land last
+  expect(ctx.verdicts.get(id)).toMatchObject({ status: 'confirmed', note: 'dropper' });
+}, 60_000);
+
+test('pressing a verdict twice while its first write is held toggles back, whatever is rendered', async () => {
+  const { store, real, release } = await heldStore();
+  const sid = await openWith(store);
+  await drop('shlayer.json');
+  const id = firstProc();
+  await act(async () => {
+    const a = ctx.toggleVerdict(id, 'confirmed');
+    const b = ctx.toggleVerdict(id, 'confirmed');
+    release();
+    await Promise.all([a, b]);
+  });
+  expect(await real.listVerdicts(sid)).toMatchObject([{ status: 'unreviewed' }]);
+}, 60_000);
+
+test('the c key twice under a held write ends unreviewed in the store', async () => {
+  const { store, real, release } = await heldStore();
+  const sid = await openWith(store);
+  await drop('shlayer.json');
+  await user.click(await firstQueueRow());
+  await user.keyboard('cc');
+  release();
+  await waitFor(async () => { expect(await real.listVerdicts(sid)).toMatchObject([{ status: 'unreviewed' }]); });
+}, 60_000);
+
 // --- Triage view (Task 10) --------------------------------------------------------------------------------------
 
 let esLabLoad: Promise<LoadedCapture> | undefined;
 /** es-lab is 28 MB: parse it once for every triage test. */
 const loadEsLab = (): Promise<LoadedCapture> => (esLabLoad ??= loadFixture('es-lab.jsonl'));
 
-interface Mocks { setVerdict: ReturnType<typeof vi.fn>; addRoutine: ReturnType<typeof vi.fn>;
+interface Mocks { setVerdict: ReturnType<typeof vi.fn>; setNote: ReturnType<typeof vi.fn>; addRoutine: ReturnType<typeof vi.fn>;
   removeRoutine: ReturnType<typeof vi.fn>; showInTree: ReturnType<typeof vi.fn> }
 
 /** TriageView on a real capture with a real `selected` state; verdict writes are mocks that update the shown verdicts. */
 function renderTriage(cap: LoadedCapture, opts: { routineKeys?: Set<string> } = {}): Mocks {
-  const mocks: Mocks = { setVerdict: vi.fn(), addRoutine: vi.fn().mockResolvedValue(true), removeRoutine: vi.fn(), showInTree: vi.fn() };
+  const mocks: Mocks = { setVerdict: vi.fn(), setNote: vi.fn(), addRoutine: vi.fn().mockResolvedValue(true), removeRoutine: vi.fn(), showInTree: vi.fn() };
   const routineKeys = opts.routineKeys ?? new Set<string>();
   function Harness() {
     const [selected, setSelected] = useState<string | null>(null);
+    const [selectedItem, setSelectedItem] = useState<string | null>(null);
     const [verdicts, setVerdicts] = useState(new Map<string, Verdict>());
     const [triageFilters, setFilters] = useState(DEFAULT_FILTERS);
     const triage = useMemo(() => applyRoutine(cap.analysis, cap.model, routineKeys), []);
@@ -530,8 +644,17 @@ function renderTriage(cap: LoadedCapture, opts: { routineKeys?: Set<string> } = 
       setVerdicts(m => new Map(m).set(id, { ...seedVerdict('s', cap.fingerprint, id, status, note ?? m.get(id)?.note ?? '') }));
       return Promise.resolve();
     });
+    mocks.setNote.mockImplementation((id: string, note: string) => {
+      setVerdicts(m => new Map(m).set(id, { ...seedVerdict('s', cap.fingerprint, id, m.get(id)?.status ?? 'unreviewed', note) }));
+      return Promise.resolve();
+    });
+    // The real toggle reads the status when it runs; here the harness's current verdicts stand in for that.
+    const toggleVerdict = (id: string, pressed: 'confirmed' | 'benign') =>
+      (mocks.setVerdict as (...a: unknown[]) => unknown)(id, toggleStatus(verdicts.get(id)?.status ?? 'unreviewed', pressed), undefined);
     const value = { capture: cap, active: cap.fingerprint, captures: new Map([[cap.fingerprint, cap]]), triage, verdicts,
-      routineKeys, selected, selectProc: setSelected, triageFilters,
+      routineKeys, selected, selectedItem, toggleVerdict,
+      selectProc: (id: string | null) => { setSelected(id); setSelectedItem(null); },
+      selectItem: (key: string) => { setSelected(null); setSelectedItem(key); }, triageFilters,
       updateTriageFilters: (patch: Partial<TriageFilters>) => { setFilters(f => ({ ...f, ...patch })); }, ...mocks } as unknown as SessionCtx;
     return <SessionContext.Provider value={value}><TriageView /></SessionContext.Provider>;
   }
@@ -652,6 +775,65 @@ test('persistence-only item: paths, no tree or routine, verdict keyed by its que
   expect(setVerdict).toHaveBeenCalledWith('i:btm:7710', 'confirmed', undefined);
 }, 60_000);
 
+/** Index of the selected row, and the visible text of every row, in order. */
+const queueState = (): { sel: number; names: string[] } => {
+  const rows = within(screen.getByRole('listbox', { name: /flagged/i })).getAllByRole('option');
+  return { sel: rows.findIndex(r => r.getAttribute('aria-selected') === 'true'), names: rows.map(r => r.querySelector('.qname')!.textContent!) };
+};
+
+test('confirming under the unreviewed filter keeps your place: j goes to the row that took its place, k to the one before', async () => {
+  renderTriage(await loadEsLab());
+  await user.click(screen.getByRole('radio', { name: /^unreviewed$/i }));
+  const before = queueState();
+  await user.click(screen.getAllByRole('option')[2]!);
+  expect(queueState().sel).toBe(2);
+  await user.keyboard('c');
+  const after = queueState();
+  expect(after.names).toHaveLength(before.names.length - 1);   // the confirmed row left the list
+  expect(after.sel).toBe(-1);
+  expect(screen.getByText('Confirmed suspicious')).toBeInTheDocument();   // …and the pane still shows the verdict you just set
+  await user.keyboard('j');
+  expect(queueState().sel).toBe(2);
+  expect(queueState().names[2]).toBe(before.names[3]);   // the row that took its place
+  // same again, going up
+  await user.keyboard('c');
+  await user.keyboard('k');
+  expect(queueState().sel).toBe(1);
+}, 60_000);
+
+test('c then n then typing under the unreviewed filter puts the note on the process you confirmed', async () => {
+  const cap = await loadEsLab();
+  const { setNote } = renderTriage(cap);
+  await user.click(screen.getByRole('radio', { name: /^unreviewed$/i }));
+  await user.click(screen.getAllByRole('option')[2]!);
+  const id = cap.analysis.queue[2]!.procId!;   // third row of the unreviewed list = third of the queue
+  await user.keyboard('c');
+  await user.keyboard('n');
+  await user.keyboard('seen in the capture');
+  await user.tab();
+  expect(setNote).toHaveBeenCalledTimes(1);
+  expect(setNote).toHaveBeenCalledWith(id, 'seen in the capture', cap.fingerprint);
+}, 60_000);
+
+test('a selected persistence-only row is still selected after Triage, Tree, Triage', async () => {
+  const cap = await loadEsLab();
+  runLoadMock.mockResolvedValue(cap);
+  await openWith(await openStore());
+  await drop('es-lab.jsonl');
+  const list = () => within(screen.getByRole('listbox', { name: /flagged/i }));
+  await user.click(list().getAllByRole('option').find(r => r.textContent?.includes('GoogleUpdater.wake.plist'))!);
+  const pane = () => within(screen.getByRole('region', { name: /selected process/i }));
+  expect(pane().getByRole('heading', { name: 'persistence: com.google.GoogleUpdater.wake.plist' })).toBeInTheDocument();
+  await user.click(screen.getByRole('tab', { name: 'Tree' }));
+  await user.click(screen.getByRole('tab', { name: 'Triage' }));
+  const back = list().getAllByRole('option').find(r => r.textContent?.includes('GoogleUpdater.wake.plist'))!;
+  expect(back).toHaveAttribute('aria-selected', 'true');
+  expect(pane().getByRole('heading', { name: 'persistence: com.google.GoogleUpdater.wake.plist' })).toBeInTheDocument();
+  // picking a process takes the item selection away, and keys still move from the process
+  await user.click(list().getAllByRole('option').find(r => /display dialog/.test(r.textContent ?? ''))!);
+  expect(back).toHaveAttribute('aria-selected', 'false');
+}, 60_000);
+
 test('filters: search, status and severity', async () => {
   renderTriage(await loadEsLab());
   const count = async () => (await screen.findAllByRole('option')).length;
@@ -735,15 +917,15 @@ test('Treat as routine asks first when high or persistence rows of that program 
 }, 60_000);
 
 test('note is saved on blur, only when it changed', async () => {
-  const { setVerdict } = renderTriage(await loadEsLab());
+  const { setNote } = renderTriage(await loadEsLab());
   await user.click(screen.getByText(/display dialog/));
   const note = screen.getByLabelText(/note/i);
   await user.click(note);
   await user.tab();
-  expect(setVerdict).not.toHaveBeenCalled();
+  expect(setNote).not.toHaveBeenCalled();
   await user.type(note, 'phishing prompt');
   await user.tab();
-  expect(setVerdict).toHaveBeenCalledWith(await osascriptId(), 'unreviewed', 'phishing prompt', (await loadEsLab()).fingerprint);
+  expect(setNote).toHaveBeenCalledWith(await osascriptId(), 'phishing prompt', (await loadEsLab()).fingerprint);
 }, 60_000);
 
 test('pressing the verdict a process already has takes it back to unreviewed (button and key)', async () => {

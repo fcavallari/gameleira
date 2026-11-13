@@ -9,7 +9,7 @@ import type { Severity } from '../rules/rules';
 import { NO_IDENTITY, programKey } from '../session/routine';
 import type { Status } from '../session/store';
 import { useSession } from './session-context';
-import { fmtArgs, fmtTime, toggleStatus } from './triage-model';
+import { fmtArgs, fmtTime } from './triage-model';
 
 const SHOW_FIRST = 40;
 const yesNo = (b: boolean): string => (b ? 'yes' : 'no');
@@ -187,17 +187,18 @@ const NOTE_DEBOUNCE_MS = 500;
  * goes to the capture and process the note was opened on (`fingerprint`, `vkey`), never to whatever is active by then:
  * a capture that finishes loading switches the active capture and unmounts this field while the user is still typing.
  */
-function Note({ vkey, fingerprint, status, saved, noteRef }: {
-  vkey: string; fingerprint: string; status: Status; saved: string; noteRef: RefObject<HTMLTextAreaElement | null>;
+function Note({ vkey, fingerprint, saved, noteRef }: {
+  vkey: string; fingerprint: string; saved: string; noteRef: RefObject<HTMLTextAreaElement | null>;
 }) {
-  const { setVerdict } = useSession();
+  const { setNote } = useSession();
   const [text, setText] = useState(saved);
   const textRef = useRef(saved);
   const savedRef = useRef(saved);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  // The latest status and saver, read when a save fires (a click on Confirm may have come after the first keystroke).
-  const live = useRef({ status, setVerdict });
-  live.current = { status, setVerdict };
+  // The latest saver, read when a save fires. The note never carries a status: setNote keeps whatever verdict is current
+  // when the write runs (a click on Confirm may have come after the first keystroke, and its write may still be open).
+  const live = useRef({ setNote });
+  live.current = { setNote };
   // The saved note changing from outside (another save) is not a local edit.
   useEffect(() => { savedRef.current = saved; }, [saved]);
 
@@ -206,7 +207,7 @@ function Note({ vkey, fingerprint, status, saved, noteRef }: {
     timer.current = undefined;
     if (textRef.current === savedRef.current) return;
     savedRef.current = textRef.current;
-    void live.current.setVerdict(vkey, live.current.status, textRef.current, fingerprint);
+    void live.current.setNote(vkey, textRef.current, fingerprint);
   });
 
   useEffect(() => {
@@ -242,8 +243,8 @@ function Actions({ vkey, p, noteRef }: { vkey: string; p: Process | null; noteRe
     <Section id="d-actions" title="Actions">
       <p className="small"><span className="muted">Status: </span><strong>{STATUS_TEXT[status]}</strong></p>
       <div className="row">
-        <button className="primary" aria-pressed={status === 'confirmed'} onClick={() => { void c.setVerdict(vkey, toggleStatus(status, 'confirmed'), undefined); }}>✔ Confirm suspicious <kbd>c</kbd></button>
-        <button aria-pressed={status === 'benign'} onClick={() => { void c.setVerdict(vkey, toggleStatus(status, 'benign'), undefined); }}>✕ Benign <kbd>b</kbd></button>
+        <button className="primary" aria-pressed={status === 'confirmed'} onClick={() => { void c.toggleVerdict(vkey, 'confirmed'); }}>✔ Confirm suspicious <kbd>c</kbd></button>
+        <button aria-pressed={status === 'benign'} onClick={() => { void c.toggleVerdict(vkey, 'benign'); }}>✕ Benign <kbd>b</kbd></button>
         {p && (pkey !== null && c.routineKeys.has(pkey)
           ? <button onClick={() => { void c.removeRoutine(pkey); }}>Stop treating as routine</button>
           : <button disabled={noIdentity} title={noIdentity ? 'No signing ID, team ID or path: it cannot be told apart from other programs' : undefined}
@@ -252,7 +253,7 @@ function Actions({ vkey, p, noteRef }: { vkey: string; p: Process | null; noteRe
       </div>
       {p && <p className="muted small">“Treat as routine” hides every run of this program, in every capture of this session, except rows with a high or persistence finding.</p>}
       {keptWhy && <p className="small warn">This program is marked routine, but this row stays visible: {keptWhy}.</p>}
-      <Note key={`${fingerprint}:${vkey}`} vkey={vkey} fingerprint={fingerprint} status={status} saved={verdict?.note ?? ''} noteRef={noteRef} />
+      <Note key={`${fingerprint}:${vkey}`} vkey={vkey} fingerprint={fingerprint} saved={verdict?.note ?? ''} noteRef={noteRef} />
       <p className="muted small">Press <kbd>n</kbd> to jump to the note. Press Confirm or Benign again to go back to unreviewed.</p>
     </Section>
   );

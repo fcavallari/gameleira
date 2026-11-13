@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ProcId } from '../model/types';
 import type { QueueItem } from '../rules/engine';
 import type { Severity } from '../rules/rules';
 import { DetailPane } from './DetailPane';
 import { QueueList, type QueueRow } from './QueueList';
 import { useSession } from './session-context';
-import { haystack, itemArgs, itemName, toggleStatus, verdictKey, type TriageFilters } from './triage-model';
+import { haystack, itemArgs, itemName, verdictKey, type TriageFilters } from './triage-model';
 
 const STATUS_FILTERS: TriageFilters['status'][] = ['all', 'unreviewed', 'confirmed', 'benign'];
 const SEVERITIES: Severity[] = ['high', 'med', 'low'];
@@ -23,14 +22,13 @@ const ownsArrows = (t: EventTarget | null): boolean => (t as HTMLInputElement | 
 
 export function TriageView() {
   const c = useSession();
-  const { capture, triage, verdicts, selected } = c;
+  const { capture, triage, selected, selectedItem } = c;
+  const { verdicts } = c;
   const { status, sev, search, showHidden } = c.triageFilters;
   const setFilters = c.updateTriageFilters;
-  /** A persistence-only item has no ProcId, so the context cannot hold it: its queue key lives here. */
-  const [persSel, setPersSel] = useState<string | null>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => { setPersSel(null); }, [c.active]);
+  /** Where the selected row last stood in the list, for when a verdict or routine mark takes it out of the list. */
+  const anchor = useRef<{ key: string; index: number } | null>(null);
 
   // Lower-cased search text per queue item, once per capture.
   const haystacks = useMemo(() => {
@@ -55,14 +53,18 @@ export function TriageView() {
     return out;
   }, [capture, triage, verdicts, status, sev, search, showHidden, haystacks]);
 
-  const selKey: string | null = selected ?? persSel;
+  const selKey: string | null = selected ?? selectedItem;
   const selectedRowKey = rows.find(r => verdictKey(r.item) === selKey)?.item.key ?? null;
+  useEffect(() => {
+    const index = rows.findIndex(r => verdictKey(r.item) === selKey);
+    if (index >= 0) anchor.current = { key: selKey!, index };
+  });
 
-  const selectProc = useCallback((id: ProcId) => { setPersSel(null); c.selectProc(id); }, [c]);
+  const { selectProc, selectItem } = c;
   const choose = useCallback((item: QueueItem) => {
-    if (item.procId !== null) { setPersSel(null); c.selectProc(item.procId); }
-    else { setPersSel(item.key); c.selectProc(null); }
-  }, [c]);
+    if (item.procId !== null) selectProc(item.procId);
+    else selectItem(item.key);
+  }, [selectProc, selectItem]);
 
   const onKey = (e: KeyboardEvent) => {
     if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target)) return;
@@ -71,7 +73,11 @@ export function TriageView() {
       e.preventDefault();
       if (rows.length === 0) return;
       const i = rows.findIndex(r => verdictKey(r.item) === selKey);
-      const next = i < 0 ? (d === 1 ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, i + d));
+      // The selected row can have left the list (confirming it under the "unreviewed" filter): carry on from where it
+      // stood. The row now at that index took its place, so "next" is that row and "previous" the one before it.
+      const at = i < 0 && selKey !== null && anchor.current?.key === selKey ? anchor.current.index : null;
+      const next = at !== null ? Math.min(rows.length - 1, Math.max(0, d === 1 ? at : at - 1))
+        : i < 0 ? (d === 1 ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, i + d));
       choose(rows[next]!.item);
     };
     switch (e.key) {
@@ -79,8 +85,7 @@ export function TriageView() {
       case 'k': case 'ArrowUp': move(-1); break;
       case 'c': case 'b': {
         if (selKey === null) break;
-        const pressed = e.key === 'c' ? 'confirmed' : 'benign';
-        void c.setVerdict(selKey, toggleStatus(verdicts.get(selKey)?.status ?? 'unreviewed', pressed), undefined);
+        void c.toggleVerdict(selKey, e.key === 'c' ? 'confirmed' : 'benign');
         break;
       }
       case 'n': if (selKey !== null && noteRef.current) { e.preventDefault(); noteRef.current.focus(); } break;
