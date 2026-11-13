@@ -281,3 +281,27 @@ describe('osascript: dialogs and script sources', () => {
     expect(ids(osa(['-e', 'beep'], { stdinIsPipe: true }))).toEqual([]);
   });
 });
+
+describe('recon bursts: a sliding 60 s window under one parent', () => {
+  const at = (s: number) => new Date(Date.UTC(2026, 10, 12, 0, 0, s)).toISOString();
+  const parent = proc('1:1', [apple('/bin/zsh', ['zsh'])]);
+  const tool = (n: number, name: string, s: number) =>
+    proc(`${200 + n}:1`, [apple(`/usr/bin/${name}`, [name], { time: at(s), seq: 10 + n })], { originalParent: '1:1', originalPpid: 1 });
+  const run = (...ts: [string, number][]) => analyze(capture([parent, ...ts.map(([name, s], n) => tool(n, name, s))]));
+  test('three tools spread over 110 s are not a burst (no 60 s window holds three)', () =>
+    expect(run(['whoami', 0], ['sw_vers', 55], ['hostname', 110]).queue).toHaveLength(0));
+  test('three tools within 60 s queue every member, marked as a burst', () => {
+    const a = run(['whoami', 0], ['sw_vers', 30], ['hostname', 59], ['uname', 200]);
+    expect(a.queue.map(q => q.procId).sort()).toEqual(['200:1', '201:1', '202:1']);
+    expect(a.queue.every(q => q.reconBurst && !q.inFlaggedChain)).toBe(true);
+  });
+  test('a window that later gains a third tool takes in its earlier members', () => {
+    const a = run(['ps', 0], ['ps', 20], ['whoami', 40], ['sw_vers', 70]);
+    expect(a.queue.map(q => q.procId).sort()).toEqual(['201:1', '202:1', '203:1']);
+  });
+  test('rows queued for another reason are not bursts', () => {
+    const q = queued('es-lab.jsonl').items;
+    expect(q.every(x => !x.item.reconBurst)).toBe(true);
+    expect(queued('atomic_stealer.json').items.filter(x => x.item.reconBurst).length).toBeGreaterThanOrEqual(3);
+  });
+});

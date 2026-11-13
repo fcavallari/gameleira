@@ -7,6 +7,8 @@ export interface Finding { ruleId: string; severity: Severity; title: string; ex
   mitre: string[]; evidence: string; imgIndex: number | null; persistenceId: string | null }
 export interface QueueItem { key: string; kind: 'process' | 'persistence'; procId: ProcId | null;
   persistenceId: string | null; severity: Severity; findings: Finding[]; inFlaggedChain: boolean;
+  /** One of 3 or more different recon tools run under the same parent within 60 s. */
+  reconBurst: boolean;
   sortSeq: number }
 export interface Analysis { queue: QueueItem[]; findings: Map<ProcId, Finding[]>;
   contextOnly: Map<ProcId, Finding[]> }
@@ -114,7 +116,7 @@ export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
     } else {
       queue.push({
         key: `i:${item.id}`, kind: 'persistence', procId: null, persistenceId: item.id,
-        severity: maxSeverity(own), findings: ordered(own), inFlaggedChain: false, sortSeq: item.seq,
+        severity: maxSeverity(own), findings: ordered(own), inFlaggedChain: false, reconBurst: false, sortSeq: item.seq,
       });
     }
   }
@@ -131,8 +133,8 @@ export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
   }
   const inChain = (id: ProcId): boolean => ancestry(m, id, 'original').some(a => chainSources.has(a));
 
-  // 4. Recon clusters: recon hits per original parent, as (tool, time).
-  const reconByParent = new Map<ProcId, { tool: string; ms: number }[]>();
+  // 4. Recon bursts: per original parent, any 60 s window holding 3 or more different recon tools; all its members count.
+  const reconByParent = new Map<ProcId, { id: ProcId; tool: string; ms: number }[]>();
   for (const [id, list] of hits) {
     const parent = m.processes.get(id)?.originalParent ?? null;
     if (parent === null) continue;
@@ -141,29 +143,38 @@ export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
       if (h.f.ruleId !== 'recon' || h.f.imgIndex === null || ms === null) continue;
       const tool = basename(m.processes.get(id)!.images[h.f.imgIndex]!.path);
       const group = reconByParent.get(parent);
-      if (group) group.push({ tool, ms });
-      else reconByParent.set(parent, [{ tool, ms }]);
+      if (group) group.push({ id, tool, ms });
+      else reconByParent.set(parent, [{ id, tool, ms }]);
     }
   }
-  const inReconCluster = (id: ProcId, list: Hit[]): boolean => {
-    const parent = m.processes.get(id)?.originalParent ?? null;
-    const group = parent !== null ? reconByParent.get(parent) : undefined;
-    if (!group) return false;
-    for (const h of list) {
-      const ms = timeMs(h.time);
-      if (h.f.ruleId !== 'recon' || ms === null) continue;
-      const tools = new Set(group.filter(g => Math.abs(g.ms - ms) <= CLUSTER_WINDOW_MS).map(g => g.tool));
-      if (tools.size >= CLUSTER_TOOLS) return true;
+  const burst = new Set<ProcId>();
+  for (const g of reconByParent.values()) {
+    g.sort((x, y) => x.ms - y.ms);
+    const counts = new Map<string, number>();
+    let j = -1;
+    let marked = -1;
+    for (let i = 0; i < g.length; i++) {
+      // Window [i, j]: every hit within 60 s after g[i].
+      while (j + 1 < g.length && g[j + 1]!.ms - g[i]!.ms <= CLUSTER_WINDOW_MS) {
+        j++;
+        counts.set(g[j]!.tool, (counts.get(g[j]!.tool) ?? 0) + 1);
+      }
+      if (counts.size >= CLUSTER_TOOLS) {
+        for (let k = Math.max(i, marked + 1); k <= j; k++) burst.add(g[k]!.id);
+        marked = j;
+      }
+      const left = counts.get(g[i]!.tool)! - 1;
+      if (left === 0) counts.delete(g[i]!.tool);
+      else counts.set(g[i]!.tool, left);
     }
-    return false;
-  };
+  }
 
   // 5. Queue.
   const findings = new Map<ProcId, Finding[]>();
   const contextOnly = new Map<ProcId, Finding[]>();
   for (const [id, list] of hits) {
     const chain = inChain(id);
-    if (!flagged.has(id) && !chain && !inReconCluster(id, list)) {
+    if (!flagged.has(id) && !chain && !burst.has(id)) {
       contextOnly.set(id, ordered(list));
       continue;
     }
@@ -171,7 +182,7 @@ export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
     findings.set(id, fs);
     queue.push({
       key: `p:${id}`, kind: 'process', procId: id, persistenceId: null,
-      severity: maxSeverity(list), findings: fs, inFlaggedChain: chain,
+      severity: maxSeverity(list), findings: fs, inFlaggedChain: chain, reconBurst: burst.has(id),
       sortSeq: Math.min(...list.map(h => h.seq)),
     });
   }
