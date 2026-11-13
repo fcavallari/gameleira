@@ -58,7 +58,7 @@ function NodeItem({ row, cap, flag, routine, status, selected, onSelect, style, 
   );
 }
 
-/** The grey rows: a fold of routine processes, or the group of processes caught in a parent cycle. */
+/** The grey rows: a fold of unflagged processes, or the group of processes caught in a parent cycle. */
 function GreyItem({ row, text, count, style, onToggle }: RowProps & { row: FoldRow | GroupRow; text: string; count?: string }) {
   const flip = () => { onToggle(row.key, !row.expanded); };
   return (
@@ -92,7 +92,7 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
   const flagged = useMemo(() => triageQueue.filter(q => q.procId !== null).map(q => q.procId!), [triageQueue]);
   const flaggedSet = useMemo(() => new Set(flagged), [flagged]);
   const keep = useMemo(() => keepSet(forest, flagged), [forest, flagged]);
-  const foldInfo = useMemo(() => makeFoldInfo(cap.model, forest, keep), [cap, forest, keep]);
+  const foldInfo = useMemo(() => makeFoldInfo(cap.model, forest, keep, c.routineKeys), [cap, forest, keep, c.routineKeys]);
   const found = useMemo(() => searchSet(cap.model, forest, search), [cap, forest, search]);
   const visible = found?.visible ?? null;
   /** Badges come from the whole analysis, so a routine-marked flagged process still shows its severity. */
@@ -226,7 +226,7 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
               </select>
             </label>
             <label className="inline">
-              <input type="checkbox" checked={fold} onChange={e => { setFold(e.target.checked); }} />Fold routine
+              <input type="checkbox" checked={fold} onChange={e => { setFold(e.target.checked); }} />Fold unflagged
             </label>
           </div>
         </div>
@@ -251,7 +251,7 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
       <section className="detail" aria-label="Selected process">
         {selected !== null
           ? <DetailPane selKey={selected} onSelectProc={c.showInTree} noteRef={noteRef} />
-          : <p className="muted detail-empty">Select a process to see its details. Grey rows fold routine processes: click one to list them.</p>}
+          : <p className="muted detail-empty">Select a process to see its details. Grey rows fold processes that no rule flagged: click one to list them.</p>}
       </section>
     </div>
   );

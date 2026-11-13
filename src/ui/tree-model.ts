@@ -1,6 +1,7 @@
 import { childrenIndex, displayName, type ParentMode } from '../model/relations';
 import type { CaptureModel, ProcId } from '../model/types';
 import { basename, latestImage } from '../model/util';
+import { programKey } from '../session/routine';
 
 /** Forest keys. A ProcId is `pid:pidversion` or `ghost:pid`, so these cannot collide with one. */
 export const ROOT = 'root';
@@ -112,14 +113,21 @@ const procName = (m: CaptureModel, id: ProcId): string => {
   return basename((p && latestImage(p)?.path) ?? null) || '(unknown)';
 };
 
-/** `routine: docker-tools ×292, git ×88, sh ×5 …`: every process in the folded subtrees, top three by count. */
-export function foldLabel(counts: Map<string, number>): string {
+/**
+ * `unflagged: docker-tools ×292, git ×88, sh ×5 …`: every process in the folded subtrees, top three by count. They are
+ * folded because no rule flagged them (nor anything under them), which is not the same as "routine", the mark the user
+ * sets on a program. `markedRoutine` of them run a program the user marked routine, and the label says so.
+ */
+export function foldLabel(counts: Map<string, number>, markedRoutine = 0): string {
   const top = [...counts].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
-  return `routine: ${top.slice(0, 3).map(([n, c]) => `${n} ×${c}`).join(', ')}${top.length > 3 ? ' …' : ''}`;
+  const incl = markedRoutine > 0 ? ` (incl. ${markedRoutine} marked routine)` : '';
+  return `unflagged${incl}: ${top.slice(0, 3).map(([n, c]) => `${n} ×${c}`).join(', ')}${top.length > 3 ? ' …' : ''}`;
 }
 
-/** Counts the folded subtrees once per fold row (cached for this forest and keep set). */
-export function makeFoldInfo(m: CaptureModel, forest: Forest, keep: Set<ProcId>): (parentKey: string) => FoldInfo | null {
+/** Counts the folded subtrees once per fold row (cached for this forest and keep set). `routineKeys`: the user's routine marks. */
+export function makeFoldInfo(
+  m: CaptureModel, forest: Forest, keep: Set<ProcId>, routineKeys: Set<string> = new Set(),
+): (parentKey: string) => FoldInfo | null {
   const cache = new Map<string, FoldInfo | null>();
   return parentKey => {
     if (cache.has(parentKey)) return cache.get(parentKey)!;
@@ -128,15 +136,19 @@ export function makeFoldInfo(m: CaptureModel, forest: Forest, keep: Set<ProcId>)
     if (members.length > 0) {
       const counts = new Map<string, number>();
       let total = 0;
+      let marked = 0;
       const stack = [...members];
       while (stack.length > 0) {
         const id = stack.pop()!;
         total++;
+        const p = m.processes.get(id);
+        const img = p ? latestImage(p) : undefined;
+        if (img && routineKeys.has(programKey(img))) marked++;
         const n = procName(m, id);
         counts.set(n, (counts.get(n) ?? 0) + 1);
         for (const kid of forest.kids.get(id) ?? []) stack.push(kid);   // no spread: a parent can have 100k+ children
       }
-      info = { total, label: foldLabel(counts), members };
+      info = { total, label: foldLabel(counts, marked), members };
     }
     cache.set(parentKey, info);
     return info;

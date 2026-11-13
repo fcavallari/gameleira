@@ -21,7 +21,7 @@ import { TreeView } from '../src/ui/TreeView';
 import { TriageView } from '../src/ui/TriageView';
 import { DEFAULT_FILTERS, toggleStatus, type TriageFilters } from '../src/ui/triage-model';
 import { applyRoutine, keepReason, programKey } from '../src/session/routine';
-import { procByPid } from './helpers';
+import { procByPid, queued } from './helpers';
 import { StoreErrorBanner } from '../src/ui/StoreErrorBanner';
 import { openStore, type CaptureRec, type Status, type Store, type Verdict } from '../src/session/store';
 import { fixture, type FixtureName } from './fixtures';
@@ -1060,7 +1060,7 @@ const procNamed = (m: CaptureModel, name: string): Process =>
 
 test('noise folded with counts', async () => {
   await treeSession();
-  expect(await screen.findByText(/routine: .*docker-tools ×\d+/)).toBeInTheDocument();
+  expect(await screen.findByText(/unflagged: .*docker-tools ×\d+/)).toBeInTheDocument();
   expect(screen.getByRole('tree', { name: 'Process tree' })).toBeInTheDocument();
 }, 60_000);
 
@@ -1092,7 +1092,7 @@ test('Show in tree reveals an unflagged process inside a fold, opening just that
   const sel = await screen.findByRole('treeitem', { selected: true });
   expect(sel).toHaveTextContent('docker-tools');
   expect(level(sel)).toBeGreaterThan(1);
-  const folds = items().filter(el => /^routine:/.test(el.textContent?.replace(/^[▸▾\s]+/, '') ?? ''));
+  const folds = items().filter(el => /^unflagged/.test(el.textContent?.replace(/^[▸▾\s]+/, '') ?? ''));
   expect(folds.filter(el => el.getAttribute('aria-expanded') === 'true')).toHaveLength(1);   // the other fold stays closed
   expect(folds.some(el => el.getAttribute('aria-expanded') === 'false')).toBe(true);
 }, 60_000);
@@ -1113,9 +1113,9 @@ test('Show in tree on a ghost parent keeps it visible with its pre-capture label
   expect(await screen.findByRole('treeitem', { selected: true })).toHaveTextContent('pid 35212 · started before capture');
 }, 60_000);
 
-test('a fold row expands on click and lists what it counted; Fold routine off shows everything unfolded', async () => {
+test('a fold row expands on click and lists what it counted; Fold unflagged off shows everything unfolded', async () => {
   await treeSession();
-  const fold = (await screen.findByText(/routine: .*docker-tools/)).closest('[role="treeitem"]') as HTMLElement;
+  const fold = (await screen.findByText(/unflagged: .*docker-tools/)).closest('[role="treeitem"]') as HTMLElement;
   expect(fold).toHaveAttribute('aria-expanded', 'false');
   expect(fold).toHaveTextContent(/\d+ processes/);
   const before = items().length;
@@ -1124,8 +1124,8 @@ test('a fold row expands on click and lists what it counted; Fold routine off sh
   expect(items().length).toBeGreaterThan(before + 1);
   expect(items().some(el => level(el) === level(fold) + 1 && el.previousElementSibling === fold)).toBe(true);   // its members, one level down
 
-  await user.click(screen.getByRole('checkbox', { name: /fold routine/i }));
-  expect(screen.queryByText(/routine: /)).not.toBeInTheDocument();
+  await user.click(screen.getByRole('checkbox', { name: /fold unflagged/i }));
+  expect(screen.queryByText(/unflagged[:(]/)).not.toBeInTheDocument();
 }, 60_000);
 
 test('marking a flagged program routine folds it, with the count going up by one', async () => {
@@ -1135,7 +1135,7 @@ test('marking a flagged program routine folds it, with the count going up by one
   const foldUnderParent = (): HTMLElement | undefined => {
     const parent = itemWith(new RegExp(`^[▸▾\\s]*${parentName}`))!;
     const all = items();
-    return all.slice(all.indexOf(parent)).find(el => /^[▸▾\s]*routine:/.test(el.textContent ?? '') && level(el) === level(parent) + 1);
+    return all.slice(all.indexOf(parent)).find(el => /^[▸▾\s]*unflagged/.test(el.textContent ?? '') && level(el) === level(parent) + 1);
   };
   const total = (el: HTMLElement): number => Number(/(\d+) processes/.exec(el.textContent ?? '')![1]);
   await screen.findByText(/^curl -s/);
@@ -1144,9 +1144,26 @@ test('marking a flagged program routine folds it, with the count going up by one
   await act(async () => { await ctx.addRoutine(latestImage(curl)!); });
   await waitFor(() => { expect(itemWith(/curl -s https/)).toBeUndefined(); });
   expect(total(foldUnderParent()!)).toBe(before + 1);
+  expect(foldUnderParent()).toHaveTextContent(/unflagged \(incl\. 1 marked routine\)/);   // not just "routine": the user's mark is named
   await user.click(foldUnderParent()!);
   expect(itemWith(/curl -s https/)).toBeDefined();
 }, 60_000);
+
+test('fold labels say "unflagged", and count the programs the user marked routine separately', async () => {
+  const { m, a } = queued('es-lab.jsonl');
+  const flagged = a.queue.filter(q => q.procId !== null).map(q => q.procId!);
+  const f = forestOf(m, 'original');
+  const keep = keepSet(f, flagged);
+  const plain = makeFoldInfo(m, f, keep);
+  const git = [...m.processes.values()].filter(p => latestImage(p)?.path?.endsWith('/git') && !keep.has(p.id));
+  expect(git.length).toBeGreaterThan(0);
+  const marked = makeFoldInfo(m, f, keep, new Set([programKey(latestImage(git[0]!)!)]));
+  const labels = (fi: typeof plain): string[] => [...f.kids.keys()].map(k => fi(k)?.label).filter((l): l is string => l !== undefined);
+  expect(labels(plain).length).toBeGreaterThan(0);
+  expect(labels(plain).every(l => l.startsWith('unflagged: '))).toBe(true);
+  expect(labels(plain).some(l => /routine/.test(l))).toBe(false);
+  expect(labels(marked).some(l => /^unflagged \(incl\. \d+ marked routine\): /.test(l))).toBe(true);
+});
 
 test('marking the program that raised a high finding routine does not fold its row', async () => {
   const cap = await treeSession();
@@ -1161,13 +1178,13 @@ test('marking the program that raised a high finding routine does not fold its r
 test('search keeps matches and their ancestors, hides the rest, and says so', async () => {
   const cap = await treeSession();
   await user.type(screen.getByRole('textbox', { name: /search/i }), 'osascript');
-  await waitFor(() => { expect(screen.queryByText(/routine: /)).not.toBeInTheDocument(); });
+  await waitFor(() => { expect(screen.queryByText(/unflagged[:(]/)).not.toBeInTheDocument(); });
   const chain = items().map(el => el.textContent!.replace(/^[▸▾\s]+/, ''));
   expect(chain).toHaveLength(3);   // ghost 35212 > zsh 35213 > osascript
   expect(chain[2]).toMatch(/osascript/);
   expect(screen.getByText(/1 match/)).toBeInTheDocument();
   await user.clear(screen.getByRole('textbox', { name: /search/i }));
-  expect(await screen.findByText(/routine: .*docker-tools/)).toBeInTheDocument();
+  expect(await screen.findByText(/unflagged: .*docker-tools/)).toBeInTheDocument();
   expect(cap).toBeDefined();
 }, 60_000);
 
@@ -1177,7 +1194,7 @@ test('clearing the search keeps the selected process on screen even when it sits
   await user.click((await screen.findAllByText(/^docker-tools/))[0]!);
   await user.clear(screen.getByRole('textbox', { name: /search/i }));
   expect(await screen.findByRole('treeitem', { selected: true })).toHaveTextContent('docker-tools');
-  expect(await screen.findByText(/routine: .*docker-tools/)).toBeInTheDocument();
+  expect(await screen.findByText(/unflagged: .*docker-tools/)).toBeInTheDocument();
 }, 60_000);
 
 /** Gives every element a 3-row-high box, so useVirtualRows picks the virtual list; returns the scrollTo spy and a restore. */
@@ -1216,8 +1233,8 @@ test('virtual list: arrow keys scroll the selection into view, and a stale targe
     // Click somewhere else, then change the rows: nothing may jump to the earlier arrow target.
     await user.click(await screen.findByText(/^curl/));
     const calls = layout.scrollTo.mock.calls.length;
-    await user.click(screen.getByRole('checkbox', { name: /fold routine/i }));   // rows change
-    await user.click(screen.getByRole('checkbox', { name: /fold routine/i }));
+    await user.click(screen.getByRole('checkbox', { name: /fold unflagged/i }));   // rows change
+    await user.click(screen.getByRole('checkbox', { name: /fold unflagged/i }));
     expect(layout.scrollTo.mock.calls.length).toBe(calls);
   } finally { layout.restore(); }
 }, 60_000);
@@ -1245,7 +1262,7 @@ test('a parent with 200,000 children flattens, folds and reveals without a stack
   const folded = flatten({ forest: f, keep, fold: true, foldInfo: fi, visible: null, overrides: new Map() });
   expect(folded.rows.map(r => r.kind)).toEqual(['node', 'node', 'fold']);
   expect(folded.folded).toBe(N);
-  expect(folded.rows[2]).toMatchObject({ label: `routine: kid ×${N}` });
+  expect(folded.rows[2]).toMatchObject({ label: `unflagged: kid ×${N}` });
   const openFold = flatten({ forest: f, keep, fold: true, foldInfo: fi, visible: null, overrides: new Map([['f:1:1', true]]) });
   expect(openFold.rows).toHaveLength(3 + N);
   const unfolded = flatten({ forest: f, keep, fold: false, foldInfo: fi, visible: null, overrides: new Map() });
@@ -1345,7 +1362,7 @@ test('a parent cycle shows as a grey "unreachable (parent cycle)" group that lis
   expect(names().some(n => /^a\b/.test(n))).toBe(false);
   await user.click(group);
   for (const n of ['a', 'b', 'leaf']) expect(names().some(t => new RegExp(`^${n}\\b`).test(t))).toBe(true);
-  expect(names().filter(t => /^(root|c1|c2|routine)/.test(t)).length).toBeGreaterThan(0);
+  expect(names().filter(t => /^(root|c1|c2|unflagged)/.test(t)).length).toBeGreaterThan(0);
 });
 
 test('flatten: every process is a row or counted in a fold row; reveal opens only the fold the target sits in', () => {
