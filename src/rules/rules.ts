@@ -163,6 +163,29 @@ const TERMINALS_EDITORS =
 
 const MAX_EVIDENCE = 300;
 
+/** An absolute path, or a relative one joined to the working directory when it is known. */
+function resolvePath(path: string, cwd: string | null): string {
+  if (path.startsWith('/') || cwd === null) return path;
+  return `${cwd.replace(/\/+$/, '')}/${path.replace(/^\.\//, '')}`;
+}
+
+/**
+ * Where osascript reads its program from, per `osascript [-l lang] [-i] [-s flags] [-e statement | programfile | -] [args]`:
+ * inline (-e), a file, or stdin (no program file, or `-`).
+ */
+function osascriptSource(args: string[]): { kind: 'inline' } | { kind: 'stdin' } | { kind: 'file'; path: string } {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a.startsWith('-e')) return { kind: 'inline' };
+    if (a === '-l' || a === '-s') { i++; continue; }
+    if (a === '-') return { kind: 'stdin' };
+    if (a === '--') return args[i + 1] !== undefined && args[i + 1] !== '-' ? { kind: 'file', path: args[i + 1]! } : { kind: 'stdin' };
+    if (a.startsWith('-')) continue;   // -i, or -lJavaScript / -so with the value attached
+    return { kind: 'file', path: a };
+  }
+  return { kind: 'stdin' };
+}
+
 function cmdline(img: Image): string {
   const s = img.args && img.args.length > 0 ? img.args.join(' ') : (img.path ?? '');
   return s.length > MAX_EVIDENCE ? `${s.slice(0, MAX_EVIDENCE)}…` : s;
@@ -228,11 +251,41 @@ const PERSISTENCE_EXPLANATION = 'Something registered itself to run automaticall
 export const RULES: Rule[] = [
   {
     id: 'fake-prompt', title: 'Dialog box from osascript', severity: 'high',
-    explanation: 'Shows a dialog box. Info-stealers use this to fake a system password prompt.',
+    explanation: 'Shows a dialog box with AppleScript\'s `display dialog`. Info-stealers use this to fake a system password prompt.',
     mitre: ['T1056.002'], scope: 'image',
     match: ({ img }) => {
       if (basename(img.path) !== 'osascript' || !img.args) return null;
-      return /display dialog|password|hidden answer/i.test(img.args.join(' ')) ? { evidence: cmdline(img) } : null;
+      const text = img.args.join(' ');
+      if (!/display dialog|displayDialog|hidden answer|hiddenAnswer/i.test(text)) return null;
+      return {
+        evidence: cmdline(img),
+        explanation: /hidden answer|hiddenAnswer/i.test(text)
+          ? 'Shows a dialog box that asks for typed text and hides it as dots, the way a password prompt does. Info-stealers use this to fake a system password prompt.'
+          : 'Shows a dialog box with AppleScript\'s `display dialog`. Info-stealers use this to fake a system password prompt, or a fake error message once they are done.',
+      };
+    },
+  },
+  {
+    id: 'osascript-script', title: 'AppleScript from a file in an odd place, or from a pipe', severity: 'med',
+    explanation: 'osascript ran an AppleScript file from a temporary, download, shared or hidden folder, or a script piped into it with no file on disk.',
+    mitre: ['T1059.002'], scope: 'image',
+    match: ({ img }) => {
+      if (basename(img.path) !== 'osascript' || !img.args) return null;
+      const src = osascriptSource(rest(img));
+      if (src.kind === 'stdin') {
+        return img.stdinIsPipe === true
+          ? { evidence: `${cmdline(img)} with stdin from a pipe`,
+            explanation: 'osascript ran an AppleScript piped into it, so there is no script file on disk to inspect.' }
+          : null;
+      }
+      if (src.kind !== 'file') return null;
+      const file = resolvePath(src.path, img.cwd);
+      const where = oddLocation(file);
+      if (where === null || where.strength !== 'strong') return null;
+      return {
+        evidence: `${cmdline(img)} (script ${file}, ${LOCATION_WORDS[where.kind].short})`,
+        explanation: `osascript ran an AppleScript file from ${LOCATION_WORDS[where.kind].long}. Malware drops scripts in places like this and runs them with osascript.`,
+      };
     },
   },
   {

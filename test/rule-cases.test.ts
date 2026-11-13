@@ -249,3 +249,35 @@ describe('keychain access and recon by technique', () => {
     }
   });
 });
+
+describe('osascript: dialogs and script sources', () => {
+  const osa = (args: string[], o: Parameters<typeof apple>[2] = {}) =>
+    allFindings(analyze(capture([proc('100:1', [apple('/usr/bin/osascript', ['osascript', ...args], o)])])));
+  const ids = (fs: Finding[]) => fs.map(f => f.ruleId);
+  test('mentioning "password" is not a fake prompt', () =>
+    expect(ids(osa(['-e', 'set f to (path to desktop as text) & "passwords.txt"']))).toEqual([]));
+  test('display dialog is, and hidden answer is explained as a password-style prompt', () => {
+    expect(ids(osa(['-e', 'display dialog "Error" buttons {"OK"}']))).toEqual(['fake-prompt']);
+    expect(osa(['-e', 'display dialog "pw" default answer "" with hidden answer'])[0]!.explanation).toMatch(/hides it as dots/);
+    expect(ids(osa(['-l', 'JavaScript', '-e', 'app.displayDialog("x", {defaultAnswer: "", hiddenAnswer: true})']))).toEqual(['fake-prompt']);
+  });
+  test('a script file in an odd location is osascript-script, med T1059.002', () => {
+    for (const args of [['/tmp/x.scpt'], ['-l', 'JavaScript', '/private/tmp/x.js'], ['-s', 'o', '/Users/u/Downloads/a.scpt', 'arg']]) {
+      const f = osa(args).find(x => x.ruleId === 'osascript-script');
+      expect(f?.severity, args.join(' ')).toBe('med');
+      expect(f?.mitre).toEqual(['T1059.002']);
+    }
+    expect(osa(['x.scpt'], { cwd: '/tmp/work' }).find(x => x.ruleId === 'osascript-script')?.evidence).toContain('/tmp/work/x.scpt');
+  });
+  test('a script file in a normal place is not flagged', () =>
+    expect(ids(osa(['/Users/u/Library/Scripts/ok.scpt']))).toEqual([]));
+  test('AppleScript piped into osascript is osascript-script', () => {
+    expect(ids(osa([], { stdinIsPipe: true }))).toEqual(['osascript-script']);
+    expect(ids(osa(['-'], { stdinIsPipe: true }))).toEqual(['osascript-script']);
+    expect(osa([], { stdinIsPipe: true })[0]!.explanation).toMatch(/piped/);
+  });
+  test('no pipe, or an inline -e script, is not', () => {
+    expect(ids(osa([], { stdinIsPipe: false }))).toEqual([]);
+    expect(ids(osa(['-e', 'beep'], { stdinIsPipe: true }))).toEqual([]);
+  });
+});
