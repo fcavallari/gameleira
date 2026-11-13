@@ -3,7 +3,8 @@ import { expect, test } from 'vitest';
 import { fingerprint } from '../src/ingest/fingerprint';
 import { loadCapture } from '../src/ingest/load';
 import { streamLines } from '../src/ingest/lines';
-import { fixture } from './fixtures';
+import { fixture, readLines } from './fixtures';
+import { realTest } from './real';
 
 test('lines split across chunk boundaries', async () => {
   const text = 'a\nbb\n' + 'c'.repeat(10) + '\nlast-no-newline';
@@ -24,7 +25,24 @@ test('progress reports bytes read against total', async () => {
   expect(seen).toEqual([[4, 8], [8, 8]]);
 });
 
-test('loadCapture on es-lab', async () => {
+test('loadCapture on the synthetic lab', async () => {
+  const c = await loadCapture(new Blob([fs.readFileSync(fixture('synthetic-lab.jsonl'))]));
+  expect(c.model.stats.events).toBe(111);
+  expect(c.analysis.queue).toHaveLength(17);
+  expect(c.fingerprint).toMatch(/^[0-9a-f]{16}:0:2026-03-14T10:00:01/);
+});
+
+test('a capture under 200 lines changes identity while it grows, and keeps it once it has 200', async () => {
+  const lab = readLines('synthetic-lab.jsonl');
+  expect(lab.length).toBeLessThan(200);
+  const asBlob = (ls: string[]) => new Blob([ls.join('\n') + '\n']);
+  const fp = (ls: string[]) => fingerprint(asBlob(ls), 0, 't');
+  expect(await fp(lab.slice(0, 60))).not.toBe(await fp(lab));
+  const long = [...lab, ...lab, ...lab];   // 327 lines
+  expect(await fp(long.slice(0, 250))).toBe(await fp(long));
+});
+
+realTest('loadCapture on es-lab', async () => {
   const c = await loadCapture(new Blob([fs.readFileSync(fixture('es-lab.jsonl'))]));
   expect(c.model.stats.events).toBe(11610);
   expect(c.analysis.queue.length).toBeGreaterThan(0);
@@ -32,7 +50,7 @@ test('loadCapture on es-lab', async () => {
   expect(c.fingerprint).toMatch(/^[0-9a-f]{16}:/);
 });
 
-test('fingerprint stable for a grown file', async () => {
+realTest('fingerprint stable for a grown file', async () => {
   const buf = fs.readFileSync(fixture('es-lab.jsonl'));
   expect(buf.length).toBeGreaterThan((1 << 20) + 5000);
   const a = await fingerprint(new Blob([buf.subarray(0, buf.length - 5000)]), 1, 't');
@@ -42,7 +60,7 @@ test('fingerprint stable for a grown file', async () => {
 
 const MIB = 1 << 20;
 
-test('a growing capture keeps its fingerprint, under 1 MiB and above it (the first 200 lines do not change)', async () => {
+realTest('a growing capture keeps its fingerprint, under 1 MiB and above it (the first 200 lines do not change)', async () => {
   const buf = fs.readFileSync(fixture('es-lab.jsonl'));
   const whole = await fingerprint(new Blob([buf]), 1, 't');
   // 0.5 and 0.9 MiB used to differ from each other: the old hash covered the first 1 MiB, whatever the file held then.

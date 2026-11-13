@@ -3,6 +3,7 @@ import { parseLine } from '../src/model/parse';
 import type { NormEvent } from '../src/model/types';
 import { basename, fileUrlToPath, normPath } from '../src/model/util';
 import { readLines, type FixtureName } from './fixtures';
+import { realTest } from './real';
 
 function isEvent(e: NormEvent | null | 'bad'): e is NormEvent {
   return e !== null && e !== 'bad';
@@ -11,7 +12,54 @@ function parseAll(name: FixtureName): NormEvent[] {
   return readLines(name).map(parseLine).filter(isEvent);
 }
 
-test('exec v11 normalizes target, args, stdin pipe', () => {
+const lab = () => parseAll('synthetic-lab.jsonl');
+
+test('synthetic lab: exec v11 normalizes target, args, stdin pipe', () => {
+  const ev = lab().find(e => e.kind === 'exec' && e.target!.pid === 7004)!;
+  expect(ev.target!.path).toBe('/bin/bash');
+  expect(ev.args).toEqual(['bash']);
+  expect(ev.stdinIsPipe).toBe(true);
+  expect(ev.script).toBeNull();
+  expect(ev.proc.path).toBe('/bin/zsh');
+  expect(ev.cwd).toBe('/Users/alice/work');
+});
+test('synthetic lab: fork gives child token', () => {
+  const ev = lab().find(e => e.kind === 'fork' && e.child!.pid === 7001)!;
+  expect(ev.proc.token).toBe('6130:8130');
+  expect(ev.child!.token).toBe('7001:9001');
+  expect(ev.child!.ppid).toBe(6130);
+});
+test('synthetic lab: create with existing_file and new_path both yield a path', () => {
+  const creates = lab().filter(e => e.kind === 'create');
+  expect(creates.every(e => typeof e.path === 'string' && e.path.length > 0)).toBe(true);
+  expect(creates.some(e => e.path === '/Users/alice/Library/LaunchAgents/com.test.labdemo.plist')).toBe(true);   // existing_file
+  expect(creates.some(e => e.path === '/private/tmp/page.html')).toBe(true);                                       // new_path
+});
+test('synthetic lab: rename carries source and destination', () => {
+  const renames = lab().filter(e => e.kind === 'rename');
+  expect(renames).toHaveLength(1);
+  expect(renames[0]).toMatchObject({
+    path: '/Users/alice/Library/LaunchAgents/.com.test.labdemo.helper.plist.tmp',
+    toPath: '/Users/alice/Library/LaunchAgents/com.test.labdemo.helper.plist',
+  });
+});
+test('synthetic lab: btm add extracts plist path, executable, item type, instigator and app', () => {
+  const b = lab().filter(e => e.kind === 'btm_add');
+  expect(b).toHaveLength(3);
+  const agent = b.find(e => e.btm!.plistPath!.endsWith('com.test.labdemo.plist'))!;
+  expect(agent.btm).toMatchObject({ executablePath: '/bin/sh', itemType: 3, appToken: null, app: null, instigatorToken: '560:1390' });
+  expect(agent.btm!.instigator).toMatchObject({ pid: 560, path: '/usr/libexec/smd' });
+  const login = b.find(e => e.btm!.plistPath === '/Users/alice/Downloads/Installer.app/')!;
+  expect(login.btm).toMatchObject({ itemType: 2, appToken: '7100:9101', appPath: '/Users/alice/Downloads/Installer.app/' });
+  expect(login.btm!.app).toMatchObject({ pid: 7100, path: '/Users/alice/Downloads/Installer.app/Contents/MacOS/Installer' });
+});
+test('synthetic lab: nanosecond times and a launchd parent token parse', () => {
+  const ev = lab()[0]!;
+  expect(ev.time).toMatch(/^2026-03-14T10:00:01\.\d{9}Z$/);
+  expect(lab().every(e => e.proc.parentToken !== null)).toBe(true);
+});
+
+realTest('exec v11 normalizes target, args, stdin pipe', () => {
   const ev = parseAll('es-lab.jsonl').find(e => e.kind === 'exec' && e.target!.pid === 40489)!;
   expect(ev.target!.path).toBe('/bin/bash');
   expect(ev.args).toEqual(['bash']);
@@ -19,22 +67,22 @@ test('exec v11 normalizes target, args, stdin pipe', () => {
   expect(ev.script).toBeNull();
   expect(ev.proc.path).toBe('/bin/zsh');
 });
-test('fork gives child token', () => {
+realTest('fork gives child token', () => {
   const ev = parseAll('es-lab.jsonl').find(e => e.kind === 'fork' && e.child!.pid === 41282)!;
   expect(ev.proc.token).toBe('41281:3563740');
   expect(ev.child!.token).toBe('41282:3563741');
 });
-test('create with existing_file and new_path both yield a path', () => {
+realTest('create with existing_file and new_path both yield a path', () => {
   const creates = parseAll('es-lab.jsonl').filter(e => e.kind === 'create');
   expect(creates.every(e => typeof e.path === 'string' && e.path.length > 0)).toBe(true);
   expect(creates.some(e => e.path!.endsWith('/Library/LaunchAgents/com.test.studyguide.plist'))).toBe(true);
 });
-test('btm add extracts plist path and executable', () => {
+realTest('btm add extracts plist path and executable', () => {
   const b = parseAll('es-lab.jsonl').filter(e => e.kind === 'btm_add');
   expect(b.some(e => e.btm!.plistPath!.endsWith('/Library/LaunchAgents/com.test.studyguide.plist'))).toBe(true);
   expect(b.find(e => e.btm!.plistPath!.endsWith('studyguide.plist'))!.btm!.executablePath).toBe('/bin/sh');
 });
-test('btm add carries item type, instigator and app with their tokens', () => {
+realTest('btm add carries item type, instigator and app with their tokens', () => {
   const sg = parseAll('es-lab.jsonl').find(e => e.kind === 'btm_add' && e.btm!.plistPath!.endsWith('studyguide.plist'))!;
   expect(sg.btm).toMatchObject({ itemType: 3, instigatorToken: '558:1379', app: null, appToken: null });
   expect(sg.btm!.instigator).toMatchObject({ token: '558:1379', pid: 558, path: '/usr/libexec/smd' });
@@ -64,7 +112,7 @@ test('btm add with missing or malformed instigator, app and item still parses', 
   const objOnly = mk({ app: { audit_token: { pid: 8, pidversion: 3 }, executable: { path: '/Applications/A.app/Contents/MacOS/A' } } });
   expect((objOnly as NormEvent).btm).toMatchObject({ appToken: '8:3', app: { token: '8:3', path: '/Applications/A.app/Contents/MacOS/A' } });
 });
-test('v6 parses', () => {
+realTest('v6 parses', () => {
   const evs = parseAll('atomic_stealer.json');
   expect(evs.length).toBe(556);
   expect(evs.every(e => e.version === 6)).toBe(true);
@@ -77,7 +125,7 @@ test('non-eslogger input', () => {
   expect(parseLine('')).toBeNull();
 });
 
-test('rename carries source and destination in both shapes', () => {
+realTest('rename carries source and destination in both shapes', () => {
   const renames = parseAll('es-lab.jsonl').filter(e => e.kind === 'rename');
   expect(renames.length).toBeGreaterThan(0);
   expect(renames.every(e => !!e.path && !!e.toPath)).toBe(true);
@@ -115,12 +163,12 @@ test('event keys that are Object.prototype names are other events', () => {
     expect(mk({ [k]: {} })).toMatchObject({ kind: 'other', rawType: k });
   }
 });
-test('v6 exec stdinIsPipe is boolean; process without audit_token is bad', () => {
+realTest('v6 exec stdinIsPipe is boolean; process without audit_token is bad', () => {
   const evs = parseAll('atomic_stealer.json').filter(e => e.kind === 'exec');
   expect(evs.every(e => typeof e.stdinIsPipe === 'boolean')).toBe(true); // v6 fixture has fds
   expect(parseLine('{"event":{"exit":{}},"process":{}}')).toBe('bad');
 });
-test('fixtures parse without bad lines', () => {
+realTest('fixtures parse without bad lines', () => {
   for (const n of ['es-lab.jsonl', 'atomic_stealer.json', 'rustbucket.json', 'shlayer.json', 'spritetree_demo.json'] as const) {
     expect(readLines(n).map(parseLine).filter(e => e === 'bad').length).toBe(0);
   }

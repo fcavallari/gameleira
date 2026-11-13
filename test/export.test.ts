@@ -13,15 +13,15 @@ let n = 0;
 beforeEach(async () => {
   store = await openStore(`test-export-${n++}`);
   s = await store.createSession('lab');
-  const { m, a } = queued('es-lab.jsonl');
-  loaded = new Map([['fp', { fingerprint: 'fp', fileName: 'es-lab.jsonl', size: 1, model: m, analysis: a }]]);
-  const p = procByPid(m, 40753);
-  await store.upsertCapture({ sessionId: s.id, fingerprint: 'fp', fileName: 'es-lab.jsonl', size: 1,
+  const { m, a } = queued('synthetic-lab.jsonl');
+  loaded = new Map([['fp', { fingerprint: 'fp', fileName: 'synthetic-lab.jsonl', size: 1, model: m, analysis: a }]]);
+  const p = procByPid(m, 7006);
+  await store.upsertCapture({ sessionId: s.id, fingerprint: 'fp', fileName: 'synthetic-lab.jsonl', size: 1,
     events: 1, processes: 1, flagged: 1, added: 't' });
   await store.setVerdict({ sessionId: s.id, fingerprint: 'fp', procKey: p.id, status: 'confirmed', note: 'n',
     updated: 't', snapshot: { name: 'osascript', path: '/usr/bin/osascript', args: null, ruleIds: ['fake-prompt'],
       severity: 'high', startTime: p.startTime } });
-  await store.setVerdict({ sessionId: s.id, fingerprint: 'fp', procKey: procByPid(m, 39838).id, status: 'benign',
+  await store.setVerdict({ sessionId: s.id, fingerprint: 'fp', procKey: procByPid(m, 7001).id, status: 'benign',
     note: '', updated: 't', snapshot: { name: 'curl', path: null, args: null, ruleIds: [], severity: null, startTime: null } });
   await store.addRoutine({ sessionId: s.id, programKey: 'k', label: 'l', added: 't' });
 });
@@ -138,14 +138,14 @@ test('store.importAll is atomic when a write fails mid-transaction', async () =>
 
 // --- command lines in exports ------------------------------------------------------------------------------------
 
-/** atomic_stealer runs `dscl . -authonly sandy <password>`: a password sits in argv. */
+/** The synthetic lab runs `dscl . -authonly labuser <password>`: a (made-up) password sits in argv. */
 async function atomicExport(opts: { includeEnv: boolean; redactArgs?: boolean }): Promise<{ out: Awaited<ReturnType<typeof exportSession>>; key: string }> {
-  const { m, a } = queued('atomic_stealer.json');
+  const { m, a } = queued('synthetic-lab.jsonl');
   const p = [...m.processes.values()].find(x => x.images.some(i => i.args?.includes('-authonly')))!;
   const img = [...p.images].reverse().find(i => i.args)!;
-  const cap = { fingerprint: 'fa', fileName: 'atomic_stealer.json', size: 1, model: m, analysis: a };
-  const t = await store.createSession('atomic');
-  await store.upsertCapture({ sessionId: t.id, fingerprint: 'fa', fileName: 'atomic_stealer.json', size: 1, events: 1, processes: 1, flagged: 1, added: 't' });
+  const cap = { fingerprint: 'fa', fileName: 'synthetic-lab.jsonl', size: 1, model: m, analysis: a };
+  const t = await store.createSession('dscl');
+  await store.upsertCapture({ sessionId: t.id, fingerprint: 'fa', fileName: 'synthetic-lab.jsonl', size: 1, events: 1, processes: 1, flagged: 1, added: 't' });
   await store.setVerdict({ sessionId: t.id, fingerprint: 'fa', procKey: p.id, status: 'confirmed', note: '', updated: 't',
     snapshot: { name: 'dscl', path: img.path, args: img.args, ruleIds: ['dscl-authonly'], severity: 'high', startTime: p.startTime } });
   return { out: await exportSession(store, t.id, opts, new Map([['fa', cap]])), key: `fa|${p.id}` };
@@ -153,15 +153,15 @@ async function atomicExport(opts: { includeEnv: boolean; redactArgs?: boolean })
 
 test('by default an export carries command lines, as stored (and the secret in them)', async () => {
   const { out, key } = await atomicExport({ includeEnv: false });
-  expect(JSON.stringify(out)).toContain('sandybachs');
-  expect(out.verdicts[0]!.snapshot.args).toContain('sandybachs');
-  expect(out.details[key]!.args).toContain('sandybachs');
+  expect(JSON.stringify(out)).toContain('labpass-not-real');
+  expect(out.verdicts[0]!.snapshot.args).toContain('labpass-not-real');
+  expect(out.details[key]!.args).toContain('labpass-not-real');
 });
 
 test('"redact command-line arguments" replaces every argument after argv[0] in snapshots and details', async () => {
   const { out, key } = await atomicExport({ includeEnv: false, redactArgs: true });
-  expect(JSON.stringify(out)).not.toContain('sandybachs');
-  expect(JSON.stringify(out)).not.toContain('sandy');   // neither the password nor the account
+  expect(JSON.stringify(out)).not.toContain('labpass-not-real');
+  expect(JSON.stringify(out)).not.toContain('labuser');   // neither the password nor the account
   const snap = out.verdicts[0]!.snapshot.args!;
   expect(snap[0]).toMatch(/dscl$/);
   expect(snap.slice(1).every(x => x === '[redacted]')).toBe(true);
@@ -175,5 +175,5 @@ test('"redact command-line arguments" replaces every argument after argv[0] in s
 test('redacting leaves the stored verdict alone', async () => {
   const { out } = await atomicExport({ includeEnv: false, redactArgs: true });
   const stored = (await store.listVerdicts(out.session.id))[0]!;
-  expect(stored.snapshot.args).toContain('sandybachs');
+  expect(stored.snapshot.args).toContain('labpass-not-real');
 });

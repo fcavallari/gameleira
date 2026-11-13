@@ -5,6 +5,7 @@ import type { CaptureStats } from '../src/model/types';
 import { itemPathKind } from '../src/model/util';
 import { captureInfo, itemArgs, rowArgs } from '../src/ui/triage-model';
 import { procByPid, queued } from './helpers';
+import { realTest } from './real';
 
 const img = (o: Partial<Image>): Image => ({
   token: '1:1', path: null, signingId: null, teamId: null, isPlatform: false, csFlags: 0,
@@ -16,7 +17,16 @@ const proc = (images: Image[]): Process => ({
   firstSeq: 1, fileOps: [],
 });
 
-test("atomic's dscl row shows dscl's own arguments, not the sh -c wrapper's", () => {
+test("the synthetic lab's dscl row shows dscl's own arguments", () => {
+  const { m, a } = queued('synthetic-lab.jsonl');
+  const p = procByPid(m, 7016);
+  expect(p.images.map(i => i.path?.split('/').pop())).toEqual(['zsh', 'dscl']);   // the fork's inherited zsh, then dscl
+  const q = a.queue.find(x => x.procId === p.id)!;
+  expect(itemArgs({ model: m } as LoadedCapture, q)).toBe('. -authonly labuser labpass-not-real');
+  expect(rowArgs(p)).toBe('. -authonly labuser labpass-not-real');
+});
+
+realTest("atomic's dscl row shows dscl's own arguments, not the sh -c wrapper's", () => {
   const { m, a } = queued('atomic_stealer.json');
   const p = [...m.processes.values()].find(x => x.images.some(i => i.args?.includes('-authonly')))!;
   expect(p.images.map(i => i.path?.split('/').pop())).toEqual(['Application.app', 'sh', 'bash', 'dscl']);
@@ -36,7 +46,7 @@ test('the latest image has no args (exec not seen): earlier args are prefixed wi
 test('a process that never exec\'d with args shows none; a single image shows its own args', () => {
   expect(rowArgs(proc([img({ path: '/bin/x', args: null, inherited: true })]))).toBe('');
   expect(rowArgs(proc([img({ path: '/bin/ls', args: ['ls', '-l', '/tmp'] })]))).toBe('-l /tmp');
-  expect(rowArgs(procByPid(queued('es-lab.jsonl').m, 40753))).toContain('display dialog');
+  expect(rowArgs(procByPid(queued('synthetic-lab.jsonl').m, 7006))).toContain('display dialog');
 });
 
 const stats = (o: Partial<CaptureStats>): CaptureStats =>

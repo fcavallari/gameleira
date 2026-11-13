@@ -2,11 +2,12 @@ import { describe, expect, test } from 'vitest';
 import { analyze, type Finding } from '../src/rules/engine';
 import { MITRE_NAMES } from '../src/rules/mitre';
 import { RULES } from '../src/rules/rules';
-import type { FixtureName } from './fixtures';
+import { hasRealCaptures, REAL_FIXTURES, type FixtureName } from './fixtures';
 import { queued } from './helpers';
+import { realTest } from './real';
 import { apple, capture, img, op, persistenceItem, proc } from './synth';
 
-const FIXTURES: FixtureName[] = ['es-lab.jsonl', 'atomic_stealer.json', 'rustbucket.json', 'shlayer.json', 'spritetree_demo.json'];
+const FIXTURES: FixtureName[] = ['synthetic-lab.jsonl', ...(hasRealCaptures ? REAL_FIXTURES : [])];
 
 /** Every finding of an analysis: queued and context-only. */
 function allFindings(a: ReturnType<typeof analyze>): Finding[] {
@@ -73,7 +74,7 @@ describe('persistence chip and title follow the item type', () => {
     expect(finding({ plistPath: '/Users/u/Library/LaunchAgents/x.plist' }).mitre).toEqual(['T1543.001']);
     expect(finding({ plistPath: '/Library/LaunchDaemons/x.plist' }).mitre).toEqual(['T1543.004']);
   });
-  test('es-lab studyguide is a launch agent', () => {
+  realTest('es-lab studyguide is a launch agent', () => {
     const f = queued('es-lab.jsonl').items.find(x => x.p?.pid === 41865)!.item.findings.find(x => x.ruleId === 'persistence-item')!;
     expect(f.mitre).toEqual(['T1543.001']);
     expect(f.title).toBe('Launch agent registered');
@@ -107,7 +108,7 @@ describe('persistence findings attach to app, then instigator, then plist creato
   });
   test('a ghost or pathless app or instigator is skipped', () => expect(where({ app: '903:1', instigator: '903:1', creator: '902:1' })).toBe('902:1'));
   test('standalone when nothing usable is captured', () => expect(where({ instigator: '558:1' })).toBe('i:btm:9'));
-  test('es-lab: studyguide stays on cat, GoogleUpdater stays standalone (both instigated by smd)', () => {
+  realTest('es-lab: studyguide stays on cat, GoogleUpdater stays standalone (both instigated by smd)', () => {
     const q = queued('es-lab.jsonl');
     expect(q.items.find(x => x.p?.pid === 41865)!.item.findings.map(f => f.ruleId)).toContain('persistence-item');
     expect(q.items.some(x => x.item.key === 'i:btm:7710')).toBe(true);
@@ -189,7 +190,7 @@ describe('persistence-item severity says why', () => {
     expect(r.severity).toBe('med');
     expect(r.evidence).toMatch(/med: /);
   });
-  test('es-lab: studyguide high for its shell, GoogleUpdater med', () => {
+  realTest('es-lab: studyguide high for its shell, GoogleUpdater med', () => {
     const q = queued('es-lab.jsonl');
     expect(q.items.find(x => x.p?.pid === 41865)!.item.findings.find(f => f.ruleId === 'persistence-item')!.evidence).toMatch(/high: it runs a shell \(sh\)/);
     expect(q.items.find(x => x.item.key === 'i:btm:7710')!.item.severity).toBe('med');
@@ -322,7 +323,7 @@ describe('recon bursts: a sliding 60 s window under one parent', () => {
     const a = run(['ps', 0], ['ps', 20], ['whoami', 40], ['sw_vers', 70]);
     expect(a.queue.map(q => q.procId).sort()).toEqual(['201:1', '202:1', '203:1']);
   });
-  test('rows queued for another reason are not bursts', () => {
+  realTest('rows queued for another reason are not bursts', () => {
     const q = queued('es-lab.jsonl').items;
     expect(q.every(x => !x.item.reconBurst)).toBe(true);
     expect(queued('atomic_stealer.json').items.filter(x => x.item.reconBurst).length).toBeGreaterThanOrEqual(3);

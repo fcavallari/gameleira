@@ -36,20 +36,33 @@ const runLoadMock = vi.mocked(runLoad);
 
 const CMD = /sudo eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove/;
 
-/** A Node File (jsdom's Blob has no reliable arrayBuffer) holding a small fixture, named like it. */
-const nodeFile = (name: FixtureName): File =>
-  new NodeFile([fs.readFileSync(fixture(name))], name) as unknown as File;
-/** What the user "drops": the bytes are never read, the mocked runLoad looks the fixture up by name. */
-const dropped = (name: FixtureName): File => new File(['x'], name);
+/**
+ * `synthetic-lab-2.jsonl`, `-3`...: the synthetic lab with n trailing spaces on its first line. Each is its own capture
+ * (the fingerprint covers the bytes of the first lines) of the same size and content, for tests that need several.
+ */
+type LabName = FixtureName | `synthetic-lab-${number}.jsonl`;
+function labVariant(name: string): string | null {
+  const n = /^synthetic-lab-(\d+)\.jsonl$/.exec(name)?.[1];
+  if (n === undefined) return null;
+  const text = fs.readFileSync(fixture('synthetic-lab.jsonl'), 'utf8');
+  const nl = text.indexOf('\n');
+  return text.slice(0, nl) + ' '.repeat(Number(n)) + text.slice(nl);
+}
 
-const loadFixture = (name: FixtureName): Promise<LoadedCapture> => loadCapture(nodeFile(name));
+/** A Node File (jsdom's Blob has no reliable arrayBuffer) holding a small fixture, named like it. */
+const nodeFile = (name: LabName): File =>
+  new NodeFile([labVariant(name) ?? fs.readFileSync(fixture(name as FixtureName))], name) as unknown as File;
+/** What the user "drops": the bytes are never read, the mocked runLoad looks the fixture up by name. */
+const dropped = (name: LabName): File => new File(['x'], name);
+
+const loadFixture = (name: LabName): Promise<LoadedCapture> => loadCapture(nodeFile(name));
 
 let user: ReturnType<typeof userEvent.setup>;
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();   // App opens the default DB: isolate every test
   user = userEvent.setup();
   runLoadMock.mockReset();
-  runLoadMock.mockImplementation((file, onProgress) => loadCapture(nodeFile(file.name as FixtureName), onProgress));
+  runLoadMock.mockImplementation((file, onProgress) => loadCapture(nodeFile(file.name as LabName), onProgress));
   Object.defineProperty(navigator, 'storage', {
     configurable: true,
     value: { persist: vi.fn().mockResolvedValue(true), persisted: vi.fn().mockResolvedValue(false) },
@@ -80,13 +93,13 @@ test('create session and see empty drop zone with capture command', async () => 
 
 test('the header shows what was skipped: unreadable lines, other event types, schema version, older-format note', async () => {
   const withStats = (stats: Partial<CaptureModel['stats']>) => async (file: File, onProgress?: Parameters<typeof loadCapture>[1]) => {
-    const cap = await loadCapture(nodeFile(file.name as FixtureName), onProgress);
+    const cap = await loadCapture(nodeFile(file.name as LabName), onProgress);
     return { ...cap, model: { ...cap.model, stats: { ...cap.model.stats, ...stats } } };
   };
-  runLoadMock.mockImplementation(withStats({ badLines: 2, otherEvents: { xyz: 3 } }));   // spritetree_demo is schema v6
+  runLoadMock.mockImplementation(withStats({ badLines: 2, otherEvents: { xyz: 3 }, versions: [6] }));
   render(<App />);
   await newSession('lab');
-  await user.upload(await screen.findByLabelText(/capture files/i), dropped('spritetree_demo.json'));
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
   const info = await screen.findByLabelText('Capture details');
   expect(info).toHaveTextContent('2 unreadable lines · other events: xyz ×3 · schema v6');
   expect(info).toHaveTextContent('older eslogger format: some checks (e.g. piped shells) may not apply');
@@ -94,12 +107,12 @@ test('the header shows what was skipped: unreadable lines, other event types, sc
 
 test('a schema 11 capture with nothing skipped shows its version and no older-format note', async () => {
   runLoadMock.mockImplementation(async file => {
-    const cap = await loadCapture(nodeFile(file.name as FixtureName));
+    const cap = await loadCapture(nodeFile(file.name as LabName));
     return { ...cap, model: { ...cap.model, stats: { ...cap.model.stats, versions: [11] } } };
   });
   render(<App />);
   await newSession('lab');
-  await user.upload(await screen.findByLabelText(/capture files/i), dropped('spritetree_demo.json'));
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
   const info = await screen.findByLabelText('Capture details');
   expect(info).toHaveTextContent('schema v11');
   expect(info).not.toHaveTextContent(/older eslogger format/);
@@ -109,15 +122,15 @@ test('shows load error in the drop zone', async () => {
   runLoadMock.mockRejectedValue(new Error('No eslogger events found in this file'));
   render(<App />);
   await newSession('lab');
-  await user.upload(await screen.findByLabelText(/capture files/i), dropped('spritetree_demo.json'));
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
   expect(await screen.findByText(/No eslogger events found/)).toBeInTheDocument();
 });
 
 test('loads a capture: header counts, tabs and placeholders', async () => {
   render(<App />);
   await newSession('lab');
-  await user.upload(await screen.findByLabelText(/capture files/i), dropped('spritetree_demo.json'));
-  await headerShows('242 events');
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
+  await headerShows('111 events');
   const group = screen.getByRole('group', { name: 'Capture counts' });
   for (const re of [/^\d+ processes$/, /^\d+ flagged$/, /^\d+ confirmed$/, /^\d+ routine hidden$/]) {
     expect(within(group).getByText(re)).toBeInTheDocument();
@@ -140,36 +153,36 @@ test('progress bar, then Analysing… once all bytes are read and until the capt
   }));
   render(<App />);
   await newSession('lab');
-  await user.upload(await screen.findByLabelText(/capture files/i), dropped('spritetree_demo.json'));
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
   expect(await screen.findByRole('progressbar')).toHaveAttribute('value', '50');
   expect(screen.queryByText(/Analysing/)).not.toBeInTheDocument();
   const progress = runLoadMock.mock.calls[0]![1];
   act(() => { progress(100, 100); });
   expect(await screen.findByText(/Analysing…/)).toBeInTheDocument();
-  await act(async () => { finish(await loadFixture('spritetree_demo.json')); });
-  await headerShows('242 events');
+  await act(async () => { finish(await loadFixture('synthetic-lab-2.jsonl')); });
+  await headerShows('111 events');
   expect(screen.queryByText(/Analysing/)).not.toBeInTheDocument();
 });
 
 test('a stored capture that is not loaded asks for a re-add; a matching drop restores it, another is new', async () => {
   const store = await openStore();
   const s = await store.createSession('old lab');
-  const demo = await loadFixture('spritetree_demo.json');
+  const demo = await loadFixture('synthetic-lab-2.jsonl');
   const rec = (c: LoadedCapture, size = 1): CaptureRec => ({ sessionId: s.id, fingerprint: c.fingerprint, fileName: c.fileName,
     size, events: c.model.stats.events, processes: c.model.processes.size, flagged: 0, added: 't' });
   await store.upsertCapture(rec(demo));
   render(<App />);
   await user.click(await screen.findByRole('button', { name: 'old lab' }));
-  expect(await screen.findByText('Re-add spritetree_demo.json to continue')).toBeInTheDocument();
+  expect(await screen.findByText('Re-add synthetic-lab-2.jsonl to continue')).toBeInTheDocument();
 
-  await user.upload(screen.getByLabelText(/capture files/i), dropped('spritetree_demo.json'));
-  await headerShows('242 events');
+  await user.upload(screen.getByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
+  await headerShows('111 events');
   expect(screen.queryByText(/Re-add/)).not.toBeInTheDocument();
   expect(await store.listCaptures(s.id)).toHaveLength(1);   // same fingerprint: restored, not duplicated
   expect((await store.listCaptures(s.id))[0]!.size).toBe(demo.size);
 
-  await user.upload(screen.getByLabelText(/capture files/i), dropped('shlayer.json'));
-  await headerShows('616 events');
+  await user.upload(screen.getByLabelText(/capture files/i), dropped('synthetic-lab.jsonl'));
+  await headerShows('111 events');
   expect(await store.listCaptures(s.id)).toHaveLength(2);
   const switcher = screen.getByLabelText(/capture/i, { selector: 'select' });
   expect(within(switcher).getAllByRole('option')).toHaveLength(2);
@@ -178,13 +191,13 @@ test('a stored capture that is not loaded asks for a re-add; a matching drop res
 test('switching to a capture that is not loaded shows the re-add prompt instead of tabs', async () => {
   const store = await openStore();
   const s = await store.createSession('lab');
-  const demo = await loadFixture('spritetree_demo.json');
+  const demo = await loadFixture('synthetic-lab-2.jsonl');
   await store.upsertCapture({ sessionId: s.id, fingerprint: 'other-fp', fileName: 'gone.jsonl', size: 1,
     events: 5, processes: 2, flagged: 0, added: 't' });
   render(<App />);
   await user.click(await screen.findByRole('button', { name: 'lab' }));
-  await user.upload(await screen.findByLabelText(/capture files/i), dropped('spritetree_demo.json'));
-  await headerShows('242 events');
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
+  await headerShows('111 events');
   await user.selectOptions(screen.getByLabelText(/capture/i, { selector: 'select' }), 'other-fp');
   expect(screen.getAllByText('Re-add gone.jsonl to continue').length).toBeGreaterThan(0);
   expect(screen.getByText(/gone\.jsonl is not loaded/)).toBeInTheDocument();
@@ -356,7 +369,7 @@ let ctx: SessionCtx;
 function Probe() { ctx = useSession(); return null; }
 function Header() { return <span data-testid="hidden">{useSession().triage?.hiddenCount ?? 0} routine hidden</span>; }
 
-async function withSession(name: FixtureName = 'shlayer.json'): Promise<{ store: Store; sessionId: string; demo: LoadedCapture }> {
+async function withSession(name: LabName = 'synthetic-lab.jsonl'): Promise<{ store: Store; sessionId: string; demo: LoadedCapture }> {
   const store = await openStore();
   const s = await store.createSession('ctx');
   render(<SessionProvider store={store}><Probe /></SessionProvider>);
@@ -433,7 +446,7 @@ test('routine marks hide queue items; the count shows in the header', async () =
   render(<SessionProvider store={store}><Probe /><Header /></SessionProvider>);
   await waitFor(() => { expect(ctx).toBeDefined(); });
   await act(async () => { await ctx.openSession(s.id); });
-  await act(async () => { await ctx.loadFiles([dropped('shlayer.json')]); });
+  await act(async () => { await ctx.loadFiles([dropped('synthetic-lab.jsonl')]); });
   const cap = ctx.captures.get(ctx.active!)!;
   // A row a routine mark may hide: neither high nor persistence (those stay visible).
   const item = cap.analysis.queue.find(q => q.kind === 'process' && keepReason(q) === null && latestImage(cap.model.processes.get(q.procId!)!)?.path)!;
@@ -458,12 +471,12 @@ test('a load that finishes after leaving the session writes nothing and leaves n
   await waitFor(() => { expect(ctx).toBeDefined(); });
   await act(async () => { await ctx.openSession(a.id); });
   let loading!: Promise<void>;
-  await act(async () => { loading = ctx.loadFiles([dropped('spritetree_demo.json')]); });
+  await act(async () => { loading = ctx.loadFiles([dropped('synthetic-lab-2.jsonl')]); });
   expect(ctx.progress).not.toBeNull();
 
   act(() => { ctx.closeSession(); });          // "← Sessions"
   await act(async () => { await ctx.openSession(b.id); });   // …and into another session
-  const demo = await loadFixture('spritetree_demo.json');
+  const demo = await loadFixture('synthetic-lab-2.jsonl');
   await act(async () => { report(100, 100); finish(demo); await loading; });
 
   expect(ctx.progress).toBeNull();
@@ -485,15 +498,15 @@ test('a queued load of the old session is skipped and does not clear the new ses
   await act(async () => { await ctx.openSession(a.id); });
   let first!: Promise<void>; let second!: Promise<void>;
   await act(async () => {
-    first = ctx.loadFiles([dropped('spritetree_demo.json')]);
-    second = ctx.loadFiles([dropped('shlayer.json')]);   // queued behind the first
+    first = ctx.loadFiles([dropped('synthetic-lab-2.jsonl')]);
+    second = ctx.loadFiles([dropped('synthetic-lab.jsonl')]);   // queued behind the first
   });
   act(() => { ctx.closeSession(); });
   await act(async () => { await ctx.openSession(b.id); });
   runLoadMock.mockRejectedValueOnce(new Error('boom in b'));
-  await act(async () => { void ctx.loadFiles([dropped('shlayer.json')]); });
-  await act(async () => { finish(await loadFixture('spritetree_demo.json')); await first; await second; });
-  expect(runLoadMock).toHaveBeenCalledTimes(2);   // a's queued shlayer run never started
+  await act(async () => { void ctx.loadFiles([dropped('synthetic-lab.jsonl')]); });
+  await act(async () => { finish(await loadFixture('synthetic-lab-2.jsonl')); await first; await second; });
+  expect(runLoadMock).toHaveBeenCalledTimes(2);   // a's queued second run never started
   expect(await store.listCaptures(a.id)).toHaveLength(0);
   expect(ctx.loadError).toBe('boom in b');
 });
@@ -515,7 +528,7 @@ test('a failing setVerdict shows a banner and does not pretend the verdict was s
   render(<SessionProvider store={store}><Probe /><StoreErrorBanner /></SessionProvider>);
   await waitFor(() => { expect(ctx).toBeDefined(); });
   await act(async () => { await ctx.openSession(s.id); });
-  await act(async () => { await ctx.loadFiles([dropped('shlayer.json')]); });
+  await act(async () => { await ctx.loadFiles([dropped('synthetic-lab.jsonl')]); });
   const cap = ctx.captures.get(ctx.active!)!;
   const procId = cap.analysis.queue.find(q => q.kind === 'process')!.procId!;
   await act(async () => { await ctx.setVerdict(procId, 'confirmed', 'n'); });
@@ -532,7 +545,7 @@ test('a failing touchSession is best-effort: the verdict is saved and shown, no 
   render(<SessionProvider store={store}><Probe /><StoreErrorBanner /></SessionProvider>);
   await waitFor(() => { expect(ctx).toBeDefined(); });
   await act(async () => { await ctx.openSession(s.id); });
-  await act(async () => { await ctx.loadFiles([dropped('shlayer.json')]); });
+  await act(async () => { await ctx.loadFiles([dropped('synthetic-lab.jsonl')]); });
   const procId = ctx.capture!.analysis.queue.find(q => q.kind === 'process')!.procId!;
   await act(async () => { await ctx.setVerdict(procId, 'confirmed'); });
   expect(ctx.verdicts.get(procId)?.status).toBe('confirmed');
@@ -578,40 +591,40 @@ async function openWith(store: Store, maxLoadedBytes?: number): Promise<string> 
   await act(async () => { await ctx.openSession(s.id); });
   return s.id;
 }
-const drop = (name: FixtureName): Promise<void> => act(async () => { await ctx.loadFiles([dropped(name)]); });
+const drop = (name: LabName): Promise<void> => act(async () => { await ctx.loadFiles([dropped(name)]); });
 
 test('loaded captures stay within the budget: the least recently used goes, the active one never does', async () => {
   const store = await openStore();
-  await openWith(store, 3_300_000);   // shlayer 1.78 MB + atomic 1.45 MB fit; a third does not
-  await drop('shlayer.json');
-  const shlayer = ctx.active!;
-  await drop('atomic_stealer.json');
-  const atomic = ctx.active!;
-  expect([...ctx.captures.keys()]).toEqual([shlayer, atomic]);
-  act(() => { ctx.setActive(shlayer); });   // shlayer is now the most recently used
-  await drop('spritetree_demo.json');
-  const sprite = ctx.active!;
-  expect([...ctx.captures.keys()].sort()).toEqual([shlayer, sprite].sort());   // atomic went, not shlayer
+  await openWith(store, 400_000);   // two 176 KB labs fit; a third does not
+  await drop('synthetic-lab.jsonl');
+  const first = ctx.active!;
+  await drop('synthetic-lab-3.jsonl');
+  const second = ctx.active!;
+  expect([...ctx.captures.keys()]).toEqual([first, second]);
+  act(() => { ctx.setActive(first); });   // the first is now the most recently used
+  await drop('synthetic-lab-2.jsonl');
+  const third = ctx.active!;
+  expect([...ctx.captures.keys()].sort()).toEqual([first, third].sort());   // the second went, not the first
   expect(ctx.capRecs).toHaveLength(3);   // still recorded: only the parsed copy is dropped
-  expect(await screen.findByText('Re-add atomic_stealer.json to continue')).toBeInTheDocument();
+  expect(await screen.findByText('Re-add synthetic-lab-3.jsonl to continue')).toBeInTheDocument();
   expect(ctx.capture).not.toBeNull();
 }, 60_000);
 
 test('a capture that alone is over the budget is kept while it is on screen', async () => {
   await openWith(await openStore(), 1000);
-  await drop('shlayer.json');
+  await drop('synthetic-lab.jsonl');
   expect(ctx.captures.size).toBe(1);
   expect(ctx.capture).not.toBeNull();
 }, 60_000);
 
 test('a note typed on a capture that then gets evicted is still saved to it', async () => {
   const store = await openStore();
-  const sid = await openWith(store, 2_500_000);   // two of the three do not fit together
-  await drop('shlayer.json');
+  const sid = await openWith(store, 300_000);   // two labs do not fit together
+  await drop('synthetic-lab.jsonl');
   const a = ctx.active!;
   await user.click(await firstQueueRow());
   await user.type(screen.getByLabelText(/note/i), 'typed before the eviction');
-  await drop('atomic_stealer.json');   // evicts shlayer, and unmounts the note field that has not saved yet
+  await drop('synthetic-lab-3.jsonl');   // evicts the first, and unmounts the note field that has not saved yet
   expect(ctx.captures.has(a)).toBe(false);
   await waitFor(async () => { expect(await store.listVerdicts(sid, a)).toMatchObject([{ note: 'typed before the eviction', status: 'unreviewed' }]); });
 }, 60_000);
@@ -641,7 +654,7 @@ const firstProc = (): string => ctx.capture!.analysis.queue.find(q => q.kind ===
 test('a note saved while a verdict write is still held keeps the verdict, and the store ends on the last write', async () => {
   const { store, real, release, writes } = await heldStore();
   const sid = await openWith(store);
-  await drop('shlayer.json');
+  await drop('synthetic-lab.jsonl');
   const id = firstProc();
   const fp = ctx.active!;
   await act(async () => {
@@ -658,7 +671,7 @@ test('a note saved while a verdict write is still held keeps the verdict, and th
 test('pressing a verdict twice while its first write is held toggles back, whatever is rendered', async () => {
   const { store, real, release } = await heldStore();
   const sid = await openWith(store);
-  await drop('shlayer.json');
+  await drop('synthetic-lab.jsonl');
   const id = firstProc();
   await act(async () => {
     const a = ctx.toggleVerdict(id, 'confirmed');
@@ -672,7 +685,7 @@ test('pressing a verdict twice while its first write is held toggles back, whate
 test('the c key twice under a held write ends unreviewed in the store', async () => {
   const { store, real, release } = await heldStore();
   const sid = await openWith(store);
-  await drop('shlayer.json');
+  await drop('synthetic-lab.jsonl');
   await user.click(await firstQueueRow());
   await user.keyboard('cc');
   release();
@@ -681,14 +694,14 @@ test('the c key twice under a held write ends unreviewed in the store', async ()
 
 // --- Triage view (Task 10) --------------------------------------------------------------------------------------
 
-let esLabLoad: Promise<LoadedCapture> | undefined;
-/** es-lab is 28 MB: parse it once for every triage test. */
-const loadEsLab = (): Promise<LoadedCapture> => (esLabLoad ??= loadFixture('es-lab.jsonl'));
+let labLoad: Promise<LoadedCapture> | undefined;
+/** Parse the synthetic lab once for every triage test. */
+const loadLab = (): Promise<LoadedCapture> => (labLoad ??= loadFixture('synthetic-lab.jsonl'));
 
 interface Mocks { setVerdict: ReturnType<typeof vi.fn>; setNote: ReturnType<typeof vi.fn>; addRoutine: ReturnType<typeof vi.fn>;
   removeRoutine: ReturnType<typeof vi.fn>; showInTree: ReturnType<typeof vi.fn> }
 
-/** TriageView on a real capture with a real `selected` state; verdict writes are mocks that update the shown verdicts. */
+/** TriageView on a loaded capture with a real `selected` state; verdict writes are mocks that update the shown verdicts. */
 function renderTriage(cap: LoadedCapture, opts: { routineKeys?: Set<string> } = {}): Mocks {
   const mocks: Mocks = { setVerdict: vi.fn(), setNote: vi.fn(), addRoutine: vi.fn().mockResolvedValue(true), removeRoutine: vi.fn(), showInTree: vi.fn() };
   const routineKeys = opts.routineKeys ?? new Set<string>();
@@ -720,10 +733,10 @@ function renderTriage(cap: LoadedCapture, opts: { routineKeys?: Set<string> } = 
   return mocks;
 }
 
-const osascriptId = async (): Promise<string> => procByPid((await loadEsLab()).model, 40753).id;
+const osascriptId = async (): Promise<string> => procByPid((await loadLab()).model, 7006).id;
 
 test('queue sorted high first and fake prompt explains itself', async () => {
-  renderTriage(await loadEsLab());
+  renderTriage(await loadLab());
   const rows = await screen.findAllByRole('option');
   expect(within(rows[0]!).getByText('high')).toBeInTheDocument();
   await user.click(screen.getByText(/display dialog/));
@@ -732,29 +745,29 @@ test('queue sorted high first and fake prompt explains itself', async () => {
 }, 60_000);
 
 test('launched-by chain ends in ghost label', async () => {
-  renderTriage(await loadEsLab());
+  renderTriage(await loadLab());
   await user.click(screen.getByText(/display dialog/));
-  expect(screen.getByText('pid 35212 · started before capture')).toBeInTheDocument();
+  expect(screen.getByText('pid 6120 · started before capture')).toBeInTheDocument();
 }, 60_000);
 
 test('confirm via keyboard persists verdict', async () => {
-  const { setVerdict } = renderTriage(await loadEsLab());
+  const { setVerdict } = renderTriage(await loadLab());
   await user.click(screen.getByText(/display dialog/));
   await user.keyboard('c');
   expect(setVerdict).toHaveBeenCalledWith(await osascriptId(), 'confirmed', undefined);
-  expect(await osascriptId()).toBe('40753:3563150');
+  expect(await osascriptId()).toBe('7006:9051');
 }, 60_000);
 
 test('long args truncate in queue row', async () => {
-  renderTriage(await loadEsLab());
+  renderTriage(await loadLab());
   const row = (await screen.findAllByRole('option'))[0]!;
   expect(row.querySelector('.args')).toHaveClass('truncate');   // jsdom doesn't load styles.css; .truncate carries text-overflow: ellipsis
 }, 60_000);
 
 test('rows: persistence-only row, chain marker, status icon; nothing is selected until the user picks a row', async () => {
-  renderTriage(await loadEsLab());
+  renderTriage(await loadLab());
   const rows = await screen.findAllByRole('option');
-  expect(rows.some(r => r.textContent?.includes('persistence: com.google.GoogleUpdater.wake.plist'))).toBe(true);
+  expect(rows.some(r => r.textContent?.includes('persistence: com.example.updater.wake.plist'))).toBe(true);
   const whoami = rows.find(r => r.textContent?.includes('whoami'))!;
   expect(within(whoami).getByTitle(/part of a flagged chain/i)).toBeInTheDocument();
   expect(rows.every(r => r.getAttribute('aria-selected') === 'false')).toBe(true);
@@ -762,7 +775,7 @@ test('rows: persistence-only row, chain marker, status icon; nothing is selected
 }, 60_000);
 
 test('detail sections: why, launched by, details, what it did, actions', async () => {
-  renderTriage(await loadEsLab());
+  renderTriage(await loadLab());
   await user.click(screen.getByText(/display dialog/));
   for (const h of [/why flagged/i, /launched by/i, /^details$/i, /what it did/i, /^actions$/i]) {
     expect(screen.getByRole('heading', { name: h })).toBeInTheDocument();
@@ -775,7 +788,7 @@ test('detail sections: why, launched by, details, what it did, actions', async (
 }, 60_000);
 
 test('a chain step selects that process; an unflagged one has an empty Why flagged', async () => {
-  renderTriage(await loadEsLab());
+  renderTriage(await loadLab());
   await user.click(screen.getByText(/display dialog/));
   const steps = within(screen.getByRole('list', { name: /launch chain/i })).getAllByRole('button');
   await user.click(steps[steps.length - 1]!);   // the nearest ancestor (a shell)
@@ -784,7 +797,7 @@ test('a chain step selects that process; an unflagged one has an empty Why flagg
 }, 60_000);
 
 test('keys: j/k move, b marks benign, t shows in tree, n focuses the note; typing in a field is not a command', async () => {
-  const { setVerdict, showInTree } = renderTriage(await loadEsLab());
+  const { setVerdict, showInTree } = renderTriage(await loadLab());
   const sel = () => screen.getAllByRole('option').findIndex(r => r.getAttribute('aria-selected') === 'true');
   await user.keyboard('j');
   expect(sel()).toBe(0);
@@ -808,7 +821,7 @@ test('keys: j/k move, b marks benign, t shows in tree, n focuses the note; typin
 }, 60_000);
 
 test('keys still work after clicking a filter (radios and checkboxes keep focus)', async () => {
-  renderTriage(await loadEsLab());
+  renderTriage(await loadLab());
   const sel = () => screen.getAllByRole('option').findIndex(r => r.getAttribute('aria-selected') === 'true');
   await user.click(screen.getByRole('radio', { name: /^unreviewed$/i }));
   await user.keyboard('j');
@@ -819,18 +832,19 @@ test('keys still work after clicking a filter (radios and checkboxes keep focus)
 }, 60_000);
 
 test('persistence-only item: paths, no tree or routine, verdict keyed by its queue key', async () => {
-  const { setVerdict } = renderTriage(await loadEsLab());
-  const row = (await screen.findAllByRole('option')).find(r => r.textContent?.includes('GoogleUpdater.wake.plist'))!;
+  const cap = await loadLab();
+  const { setVerdict } = renderTriage(cap);
+  const row = (await screen.findAllByRole('option')).find(r => r.textContent?.includes('updater.wake.plist'))!;
   await user.click(row);
   const detail = within(screen.getByRole('region', { name: /selected process/i }));
-  expect(detail.getByText(/^\/Users\/[^/]+\/Library\/LaunchAgents\/com\.google\.GoogleUpdater\.wake\.plist$/)).toBeInTheDocument();
-  expect(detail.getByText('Runs').nextElementSibling).toHaveTextContent(/GoogleUpdater\/Current\/GoogleUpdater\.app\/Contents\/MacOS\/GoogleUpdater$/);
-  expect(detail.getByText('App').nextElementSibling).toHaveTextContent(/157\.0\.8089\.2\/GoogleUpdater\.app/);
+  expect(detail.getByText(/^\/Users\/[^/]+\/Library\/LaunchAgents\/com\.example\.updater\.wake\.plist$/)).toBeInTheDocument();
+  expect(detail.getByText('Runs').nextElementSibling).toHaveTextContent(/Updater\/Current\/Updater\.app\/Contents\/MacOS\/Updater$/);
+  expect(detail.getByText('App').nextElementSibling).toHaveTextContent(/1\.2\.3\/Updater\.app/);
   expect(detail.getByText(/Registered a launch agent for this user: launchd loads it/)).toBeInTheDocument();
   expect(detail.queryByRole('button', { name: /show in tree/i })).not.toBeInTheDocument();
   expect(detail.queryByRole('button', { name: /routine/i })).not.toBeInTheDocument();
   await user.keyboard('c');
-  expect(setVerdict).toHaveBeenCalledWith('i:btm:7710', 'confirmed', undefined);
+  expect(setVerdict).toHaveBeenCalledWith(cap.analysis.queue.find(q => q.kind === 'persistence')!.key, 'confirmed', undefined);
 }, 60_000);
 
 /** Index of the selected row, and the visible text of every row, in order. */
@@ -840,7 +854,7 @@ const queueState = (): { sel: number; names: string[] } => {
 };
 
 test('confirming under the unreviewed filter keeps your place: j goes to the row that took its place, k to the one before', async () => {
-  renderTriage(await loadEsLab());
+  renderTriage(await loadLab());
   await user.click(screen.getByRole('radio', { name: /^unreviewed$/i }));
   const before = queueState();
   await user.click(screen.getAllByRole('option')[2]!);
@@ -860,7 +874,7 @@ test('confirming under the unreviewed filter keeps your place: j goes to the row
 }, 60_000);
 
 test('c then n then typing under the unreviewed filter puts the note on the process you confirmed', async () => {
-  const cap = await loadEsLab();
+  const cap = await loadLab();
   const { setNote } = renderTriage(cap);
   await user.click(screen.getByRole('radio', { name: /^unreviewed$/i }));
   await user.click(screen.getAllByRole('option')[2]!);
@@ -874,19 +888,19 @@ test('c then n then typing under the unreviewed filter puts the note on the proc
 }, 60_000);
 
 test('a selected persistence-only row is still selected after Triage, Tree, Triage', async () => {
-  const cap = await loadEsLab();
+  const cap = await loadLab();
   runLoadMock.mockResolvedValue(cap);
   await openWith(await openStore());
-  await drop('es-lab.jsonl');
+  await drop('synthetic-lab.jsonl');
   const list = () => within(screen.getByRole('listbox', { name: /flagged/i }));
-  await user.click(list().getAllByRole('option').find(r => r.textContent?.includes('GoogleUpdater.wake.plist'))!);
+  await user.click(list().getAllByRole('option').find(r => r.textContent?.includes('updater.wake.plist'))!);
   const pane = () => within(screen.getByRole('region', { name: /selected process/i }));
-  expect(pane().getByRole('heading', { name: 'persistence: com.google.GoogleUpdater.wake.plist' })).toBeInTheDocument();
+  expect(pane().getByRole('heading', { name: 'persistence: com.example.updater.wake.plist' })).toBeInTheDocument();
   await user.click(screen.getByRole('tab', { name: 'Tree' }));
   await user.click(screen.getByRole('tab', { name: 'Triage' }));
-  const back = list().getAllByRole('option').find(r => r.textContent?.includes('GoogleUpdater.wake.plist'))!;
+  const back = list().getAllByRole('option').find(r => r.textContent?.includes('updater.wake.plist'))!;
   expect(back).toHaveAttribute('aria-selected', 'true');
-  expect(pane().getByRole('heading', { name: 'persistence: com.google.GoogleUpdater.wake.plist' })).toBeInTheDocument();
+  expect(pane().getByRole('heading', { name: 'persistence: com.example.updater.wake.plist' })).toBeInTheDocument();
   // picking a process takes the item selection away, and keys still move from the process
   await user.click(list().getAllByRole('option').find(r => /display dialog/.test(r.textContent ?? ''))!);
   expect(back).toHaveAttribute('aria-selected', 'false');
@@ -901,22 +915,22 @@ const pane = () => within(screen.getByRole('region', { name: /selected process/i
 const field = (label: string): HTMLElement => pane().getByText(label, { selector: 'dt' }).nextElementSibling as HTMLElement;
 
 test('a process row that carries a persistence finding shows its launch item: type, plist, who registered it, who the finding is on', async () => {
-  const cap = await loadEsLab();
+  const cap = await loadLab();
   renderTriage(cap);
   await user.click(screen.getAllByRole('option').find(r => r.textContent?.startsWith('high') && r.textContent.includes('cat'))!);
   expect(pane().getByRole('heading', { name: 'Launch item' })).toBeInTheDocument();
   expect(field('Item type')).toHaveTextContent('Launch agent');
-  expect(field('Plist')).toHaveTextContent(/\/Library\/LaunchAgents\/com\.test\.studyguide\.plist$/);
+  expect(field('Plist')).toHaveTextContent(/\/Library\/LaunchAgents\/com\.test\.labdemo\.plist$/);
   expect(field('Runs')).toHaveTextContent('/bin/sh');
-  expect(field('Registered by')).toHaveTextContent(/^smd \(instigator; an Apple system process/);   // the XPC caller; es-lab's event has no app
+  expect(field('Registered by')).toHaveTextContent(/^smd \(instigator; an Apple system process/);   // the XPC caller; this event has no app
   expect(field('Reported by')).toHaveTextContent(/backgroundtaskmanagementd/);   // the daemon that emitted the event is not the registrant
   expect(field('Finding on')).toHaveTextContent('this process (plist writer)');
   expect(pane().getAllByText(/T1543\.001 · Launch Agent/).length).toBeGreaterThan(0);
 }, 60_000);
 
 test('a launch item no process owns says it stands alone, and an Apple system registrant is glossed as possibly a relay', async () => {
-  renderTriage(await loadEsLab());
-  await user.click(screen.getAllByRole('option').find(r => r.textContent?.includes('GoogleUpdater.wake.plist'))!);
+  renderTriage(await loadLab());
+  await user.click(screen.getAllByRole('option').find(r => r.textContent?.includes('updater.wake.plist'))!);
   expect(field('Item type')).toHaveTextContent('Launch agent');
   expect(field('Registered by')).toHaveTextContent(/smd \(instigator; an Apple system process, which may only be relaying/);
   expect(field('Finding on')).toHaveTextContent(/no process: this item stands alone/);
@@ -996,7 +1010,7 @@ async function scriptedStore(script: ('ok' | 'fail' | 'hang')[]): Promise<{ stor
 test('write A fails then write B fails: nothing unsaved stays on screen, and the next press starts from the stored state', async () => {
   const { store, real, release } = await scriptedStore(['fail', 'fail', 'ok']);
   const sid = await openWith(store);
-  await drop('shlayer.json');
+  await drop('synthetic-lab.jsonl');
   const id = firstProc();
   await act(async () => {
     const a = ctx.toggleVerdict(id, 'confirmed');
@@ -1014,7 +1028,7 @@ test('write A fails then write B fails: nothing unsaved stays on screen, and the
 test('write A fails then write B succeeds: B, built on A, is what is stored and shown', async () => {
   const { store, real, release } = await scriptedStore(['fail', 'ok']);
   const sid = await openWith(store);
-  await drop('shlayer.json');
+  await drop('synthetic-lab.jsonl');
   const id = firstProc();
   await act(async () => {
     const a = ctx.toggleVerdict(id, 'confirmed');
@@ -1029,7 +1043,7 @@ test('write A fails then write B succeeds: B, built on A, is what is stored and 
 test('write A succeeds then write B fails: the screen goes back to A, which is what the store holds', async () => {
   const { store, real, release } = await scriptedStore(['ok', 'fail']);
   const sid = await openWith(store);
-  await drop('shlayer.json');
+  await drop('synthetic-lab.jsonl');
   const id = firstProc();
   await act(async () => {
     const a = ctx.toggleVerdict(id, 'confirmed');
@@ -1044,7 +1058,7 @@ test('write A succeeds then write B fails: the screen goes back to A, which is w
 test('a write that never settles is reported after 10 s, rolled back, and does not block the next write', async () => {
   const { store, real, release } = await scriptedStore(['hang', 'ok']);
   const sid = await openWith(store);
-  await drop('shlayer.json');
+  await drop('synthetic-lab.jsonl');
   const id = firstProc();
   release();   // the gate only matters for the first call; it hangs after it
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -1084,7 +1098,7 @@ test('the export choices survive a trip to another tab, and the tab says how man
 
 test('no "left out" notice when every confirmed process has its capture loaded', async () => {
   await openWith(await openStore());
-  await drop('shlayer.json');
+  await drop('synthetic-lab.jsonl');
   await act(async () => { await ctx.setVerdict(firstProc(), 'confirmed'); });
   await user.click(screen.getByRole('tab', { name: 'Confirmed' }));
   expect(screen.queryByText(/are left out because/)).not.toBeInTheDocument();
@@ -1111,13 +1125,13 @@ test('a login item whose URL is the app bundle is labelled App, not Plist, and n
 });
 
 test('a trait finding says it is a trait, not an attack technique, instead of an empty MITRE row', async () => {
-  const cap = await loadFixture('shlayer.json');
+  const cap = await loadFixture('synthetic-lab.jsonl');
   renderTriage(cap);
-  const i = cap.analysis.queue.findIndex(q => q.findings.some(f => f.ruleId === 'unsigned'));
+  const i = cap.analysis.queue.findIndex(q => q.findings.some(f => f.ruleId === 'adhoc'));
   await user.click(screen.getAllByRole('option')[i]!);
   const label = screen.getByText('trait, not an attack technique');
   const block = label.closest('article')!;
-  expect(block).toHaveTextContent(/unsigned/i);
+  expect(block).toHaveTextContent(/ad-hoc/i);
   expect(block.querySelectorAll('[title="MITRE ATT&CK technique"]')).toHaveLength(0);
   // a technique finding shows technique chips and no trait label
   const other = cap.analysis.queue.findIndex(q => q.findings.some(f => !f.trait && f.mitre.length > 0));
@@ -1126,12 +1140,12 @@ test('a trait finding says it is a trait, not an attack technique, instead of an
 }, 60_000);
 
 test('recon burst rows are marked in the queue, the tree and the detail pane', async () => {
-  const cap = await loadFixture('atomic_stealer.json');
+  const cap = await loadFixture('synthetic-lab-3.jsonl');
   const bursts = cap.analysis.queue.filter(q => q.reconBurst);
   expect(bursts.length).toBeGreaterThan(0);
   runLoadMock.mockResolvedValue(cap);
   await openWith(await openStore());
-  await drop('atomic_stealer.json');
+  await drop('synthetic-lab-3.jsonl');
   const list = () => within(screen.getByRole('listbox', { name: /flagged/i }));
   expect(list().getAllByText('recon burst')).toHaveLength(bursts.length);
   const row = list().getAllByRole('option').find(r => r.textContent?.includes('recon burst'))!;
@@ -1165,7 +1179,7 @@ test('the newer rules show title, explanation, evidence and their technique', as
 });
 
 test('filters: search, status and severity', async () => {
-  renderTriage(await loadEsLab());
+  renderTriage(await loadLab());
   const count = async () => (await screen.findAllByRole('option')).length;
   const all = await count();
   await user.type(screen.getByRole('textbox', { name: /search/i }), 'DITTO');
@@ -1189,10 +1203,9 @@ test('filters: search, status and severity', async () => {
 }, 60_000);
 
 test('routine hidden: counted in the footer, shown greyed on request; Treat as routine passes the image', async () => {
-  const cap = await loadEsLab();
-  const curl = procByPid(cap.model, 39838);
-  const curlImg = latestImage(curl)!;
-  const { addRoutine } = renderTriage(cap, { routineKeys: new Set([programKey(curlImg)]) });
+  const cap = await loadLab();
+  const bash = procByPid(cap.model, 7004);   // the only queued row that runs bash
+  const { addRoutine } = renderTriage(cap, { routineKeys: new Set([programKey(latestImage(bash)!)]) });
   const total = cap.analysis.queue.length;
   expect(await screen.findAllByRole('option')).toHaveLength(total - 1);
   expect(screen.getByText(/1 routine hidden/)).toBeInTheDocument();
@@ -1201,24 +1214,23 @@ test('routine hidden: counted in the footer, shown greyed on request; Treat as r
   expect(rows).toHaveLength(total);
   const greyed = rows.filter(r => r.classList.contains('routine'));
   expect(greyed).toHaveLength(1);
-  expect(greyed[0]).toHaveTextContent('curl');
+  expect(greyed[0]).toHaveTextContent('bash');
   await user.click(screen.getByRole('button', { name: 'hide' }));
   expect(screen.getAllByRole('option')).toHaveLength(total - 1);
 
   await user.click(screen.getByText(/display dialog/));
   await user.click(screen.getByRole('button', { name: /treat as routine/i }));
-  expect(addRoutine).toHaveBeenCalledWith(latestImage(procByPid(cap.model, 40753)));
+  expect(addRoutine).toHaveBeenCalledWith(latestImage(procByPid(cap.model, 7006)));
 }, 60_000);
 
-/** The es-lab process that wrote com.test.studyguide.plist: its row carries the high persistence finding. */
+/** The process that wrote com.test.labdemo.plist (the shell child that became `cat`): its row carries the high persistence finding. */
 async function plistWriterImage(): Promise<Image> {
-  const cap = await loadEsLab();
-  const row = cap.analysis.queue.find(q => q.findings.some(f => f.persistenceId === 'btm:7709'))!;
-  return latestImage(cap.model.processes.get(row.procId!)!)!;
+  const cap = await loadLab();
+  return latestImage(procByPid(cap.model, 7013))!;
 }
 
 test('a routine mark never hides the row with a persistence finding: the row says why it stayed', async () => {
-  const cap = await loadEsLab();
+  const cap = await loadLab();
   const writer = await plistWriterImage();
   renderTriage(cap, { routineKeys: new Set([programKey(writer)]) });
   const rows = await screen.findAllByRole('option');
@@ -1231,7 +1243,7 @@ test('a routine mark never hides the row with a persistence finding: the row say
 }, 60_000);
 
 test('Treat as routine asks first when high or persistence rows of that program would stay visible', async () => {
-  const { store, sessionId } = await withSession('es-lab.jsonl');
+  const { store, sessionId } = await withSession('synthetic-lab.jsonl');
   const writer = await plistWriterImage();
   vi.mocked(window.confirm).mockReturnValueOnce(false);
   await act(async () => { expect(await ctx.addRoutine(writer)).toBe(false); });
@@ -1243,11 +1255,11 @@ test('Treat as routine asks first when high or persistence rows of that program 
   await act(async () => { expect(await ctx.addRoutine(writer)).toBe(true); });
   expect(await store.listRoutine(sessionId)).toHaveLength(1);
   // the kept row is still in the queue the user sees
-  expect(ctx.triage!.queue.some(q => q.findings.some(f => f.persistenceId === 'btm:7709'))).toBe(true);
+  expect(ctx.triage!.queue.some(q => q.findings.some(f => f.persistenceId !== null) && q.procId === procByPid(ctx.capture!.model, 7013).id)).toBe(true);
 }, 60_000);
 
 test('note is saved on blur, only when it changed', async () => {
-  const { setNote } = renderTriage(await loadEsLab());
+  const { setNote } = renderTriage(await loadLab());
   await user.click(screen.getByText(/display dialog/));
   const note = screen.getByLabelText(/note/i);
   await user.click(note);
@@ -1255,11 +1267,11 @@ test('note is saved on blur, only when it changed', async () => {
   expect(setNote).not.toHaveBeenCalled();
   await user.type(note, 'phishing prompt');
   await user.tab();
-  expect(setNote).toHaveBeenCalledWith(await osascriptId(), 'phishing prompt', (await loadEsLab()).fingerprint);
+  expect(setNote).toHaveBeenCalledWith(await osascriptId(), 'phishing prompt', (await loadLab()).fingerprint);
 }, 60_000);
 
 test('pressing the verdict a process already has takes it back to unreviewed (button and key)', async () => {
-  const { setVerdict } = renderTriage(await loadEsLab());
+  const { setVerdict } = renderTriage(await loadLab());
   await user.click(screen.getByText(/display dialog/));
   const confirm = screen.getByRole('button', { name: /confirm suspicious/i });
   const benign = screen.getByRole('button', { name: /^✕ benign/i });
@@ -1289,27 +1301,27 @@ test('pressing the verdict a process already has takes it back to unreviewed (bu
 }, 60_000);
 
 test('empty queue says so', async () => {
-  const cap = await loadEsLab();
+  const cap = await loadLab();
   renderTriage({ ...cap, analysis: { ...cap.analysis, queue: [] } });
   expect(await screen.findByText(/nothing flagged/i)).toBeInTheDocument();
 }, 60_000);
 
 test('setVerdict accepts a persistence-only item by its queue key', async () => {
-  const { store, sessionId, demo } = await withSession('es-lab.jsonl');
+  const { store, sessionId, demo } = await withSession('synthetic-lab.jsonl');
   const item = demo.analysis.queue.find(q => q.kind === 'persistence')!;
-  expect(item.key).toBe('i:btm:7710');
-  await act(async () => { await ctx.setVerdict(item.key, 'benign', 'GoogleUpdater, expected'); });
+  expect(item.key).toMatch(/^i:btm:\d+$/);
+  await act(async () => { await ctx.setVerdict(item.key, 'benign', 'Updater, expected'); });
   const [v] = await store.listVerdicts(sessionId, demo.fingerprint);
-  expect(v).toMatchObject({ procKey: 'i:btm:7710', status: 'benign', note: 'GoogleUpdater, expected' });
-  expect(v!.snapshot).toMatchObject({ name: 'persistence: com.google.GoogleUpdater.wake.plist', severity: 'med', ruleIds: ['persistence-item'] });
+  expect(v).toMatchObject({ procKey: item.key, status: 'benign', note: 'Updater, expected' });
+  expect(v!.snapshot).toMatchObject({ name: 'persistence: com.example.updater.wake.plist', severity: 'med', ruleIds: ['persistence-item'] });
   expect(ctx.verdicts.get(item.key)?.status).toBe('benign');
 }, 60_000);
 
 // --- Tree view (Task 11) ------------------------------------------------------------------------------------------
 
-/** A real session on es-lab (parsed once, see loadEsLab), opened on the Tree tab. */
+/** A session on the synthetic lab (parsed once, see loadLab), opened on the Tree tab. */
 async function treeSession(view: 'tree' | 'triage' = 'tree'): Promise<LoadedCapture> {
-  const cap = await loadEsLab();
+  const cap = await loadLab();
   runLoadMock.mockImplementation(() => Promise.resolve(cap));
   const store = await openStore();
   const s = await store.createSession('tree');
@@ -1317,7 +1329,7 @@ async function treeSession(view: 'tree' | 'triage' = 'tree'): Promise<LoadedCapt
   render(<SessionProvider store={store}><Probe /><Screen /></SessionProvider>);
   await waitFor(() => { expect(ctx).toBeDefined(); });
   await act(async () => { await ctx.openSession(s.id); });
-  await act(async () => { await ctx.loadFiles([dropped('es-lab.jsonl')]); });
+  await act(async () => { await ctx.loadFiles([dropped('synthetic-lab.jsonl')]); });
   act(() => { ctx.setView(view); });
   return cap;
 }
@@ -1336,13 +1348,13 @@ const procNamed = (m: CaptureModel, name: string): Process =>
 
 test('noise folded with counts', async () => {
   await treeSession();
-  expect(await screen.findByText(/unflagged: .*docker-tools ×\d+/)).toBeInTheDocument();
+  expect(await screen.findByText(/unflagged: .*\bps ×\d+/)).toBeInTheDocument();
   expect(screen.getByRole('tree', { name: 'Process tree' })).toBeInTheDocument();
 }, 60_000);
 
 test('show in tree focuses osascript under zsh', async () => {
   const cap = await treeSession();
-  act(() => { ctx.showInTree(procByPid(cap.model, 40753).id); });
+  act(() => { ctx.showInTree(procByPid(cap.model, 7006).id); });
   const sel = await screen.findByRole('treeitem', { selected: true });
   expect(sel).toHaveTextContent('osascript');
   expect(parentRow(sel)).toHaveTextContent('zsh');
@@ -1361,12 +1373,12 @@ test('mode switch moves sleep 90 under launchd', async () => {
 
 test('Show in tree reveals an unflagged process inside a fold, opening just that fold', async () => {
   const cap = await treeSession();
-  const target = procNamed(cap.model, 'docker-tools');
+  const target = procNamed(cap.model, 'git');
   expect(cap.analysis.queue.some(q => q.procId === target.id)).toBe(false);
-  expect(screen.queryByText(/^docker-tools/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/^git /)).not.toBeInTheDocument();
   act(() => { ctx.showInTree(target.id); });
   const sel = await screen.findByRole('treeitem', { selected: true });
-  expect(sel).toHaveTextContent('docker-tools');
+  expect(sel).toHaveTextContent('git');
   expect(level(sel)).toBeGreaterThan(1);
   const folds = items().filter(el => /^unflagged/.test(el.textContent?.replace(/^[▸▾\s]+/, '') ?? ''));
   expect(folds.filter(el => el.getAttribute('aria-expanded') === 'true')).toHaveLength(1);   // the other fold stays closed
@@ -1384,14 +1396,14 @@ test('Show in tree from the triage screen (key t) lands on the process', async (
 
 test('Show in tree on a ghost parent keeps it visible with its pre-capture label', async () => {
   const cap = await treeSession();
-  const ghost = procByPid(cap.model, 35212);
+  const ghost = procByPid(cap.model, 6120);
   act(() => { ctx.showInTree(ghost.id); });
-  expect(await screen.findByRole('treeitem', { selected: true })).toHaveTextContent('pid 35212 · started before capture');
+  expect(await screen.findByRole('treeitem', { selected: true })).toHaveTextContent('pid 6120 · started before capture');
 }, 60_000);
 
 test('a fold row expands on click and lists what it counted; Fold unflagged off shows everything unfolded', async () => {
   await treeSession();
-  const fold = (await screen.findByText(/unflagged: .*docker-tools/)).closest('[role="treeitem"]') as HTMLElement;
+  const fold = (await screen.findByText(/unflagged: .*\bps ×6/)).closest('[role="treeitem"]') as HTMLElement;
   expect(fold).toHaveAttribute('aria-expanded', 'false');
   expect(fold).toHaveTextContent(/\d+ processes/);
   const before = items().length;
@@ -1406,7 +1418,7 @@ test('a fold row expands on click and lists what it counted; Fold unflagged off 
 
 test('marking a flagged program routine folds it, with the count going up by one', async () => {
   const cap = await treeSession();
-  const curl = procByPid(cap.model, 39838);   // flagged, but neither high nor persistence: a routine mark may hide it
+  const curl = procByPid(cap.model, 7001);   // flagged, but neither high nor persistence: a routine mark may hide it
   const parentName = displayName(cap.model, curl.originalParent!);
   const foldUnderParent = (): HTMLElement | undefined => {
     const parent = itemWith(new RegExp(`^[▸▾\\s]*${parentName}`))!;
@@ -1426,7 +1438,7 @@ test('marking a flagged program routine folds it, with the count going up by one
 }, 60_000);
 
 test('fold labels say "unflagged", and count the programs the user marked routine separately', async () => {
-  const { m, a } = queued('es-lab.jsonl');
+  const { m, a } = queued('synthetic-lab.jsonl');
   const flagged = a.queue.filter(q => q.procId !== null).map(q => q.procId!);
   const f = forestOf(m, 'original');
   const keep = keepSet(f, flagged);
@@ -1443,7 +1455,7 @@ test('fold labels say "unflagged", and count the programs the user marked routin
 
 test('marking the program that raised a high finding routine does not fold its row', async () => {
   const cap = await treeSession();
-  const osa = procByPid(cap.model, 40753);   // fake-prompt, high
+  const osa = procByPid(cap.model, 7006);   // fake-prompt, high
   await screen.findByText(/osascript/);
   await act(async () => { await ctx.addRoutine(latestImage(osa)!); });
   expect(ctx.routineKeys.has(programKey(latestImage(osa)!))).toBe(true);
@@ -1456,21 +1468,21 @@ test('search keeps matches and their ancestors, hides the rest, and says so', as
   await user.type(screen.getByRole('textbox', { name: /search/i }), 'osascript');
   await waitFor(() => { expect(screen.queryByText(/unflagged[:(]/)).not.toBeInTheDocument(); });
   const chain = items().map(el => el.textContent!.replace(/^[▸▾\s]+/, ''));
-  expect(chain).toHaveLength(3);   // ghost 35212 > zsh 35213 > osascript
+  expect(chain).toHaveLength(3);   // ghost 6120 > zsh 6130 > osascript
   expect(chain[2]).toMatch(/osascript/);
   expect(screen.getByText(/1 match/)).toBeInTheDocument();
   await user.clear(screen.getByRole('textbox', { name: /search/i }));
-  expect(await screen.findByText(/unflagged: .*docker-tools/)).toBeInTheDocument();
+  expect(await screen.findByText(/unflagged: .*\bps ×6/)).toBeInTheDocument();
   expect(cap).toBeDefined();
 }, 60_000);
 
 test('clearing the search keeps the selected process on screen even when it sits in a fold', async () => {
   await treeSession();
-  await user.type(screen.getByRole('textbox', { name: /search/i }), 'docker-tools');
-  await user.click((await screen.findAllByText(/^docker-tools/))[0]!);
+  await user.type(screen.getByRole('textbox', { name: /search/i }), 'git');
+  await user.click((await screen.findAllByText(/^git /))[0]!);
   await user.clear(screen.getByRole('textbox', { name: /search/i }));
-  expect(await screen.findByRole('treeitem', { selected: true })).toHaveTextContent('docker-tools');
-  expect(await screen.findByText(/unflagged: .*docker-tools/)).toBeInTheDocument();
+  expect(await screen.findByRole('treeitem', { selected: true })).toHaveTextContent('git');
+  expect(await screen.findByText(/unflagged: .*\bps ×6/)).toBeInTheDocument();
 }, 60_000);
 
 /** Gives every element a 3-row-high box, so useVirtualRows picks the virtual list; returns the scrollTo spy and a restore. */
@@ -1520,7 +1532,7 @@ test('virtual list: Show in tree centres a process hidden in a fold', async () =
   try {
     const cap = await treeSession();
     layout.scrollTo.mockClear();
-    act(() => { ctx.showInTree(procNamed(cap.model, 'docker-tools').id); });
+    act(() => { ctx.showInTree(procNamed(cap.model, 'git').id); });
     // scrollTo is a spy, so the window does not move; the target offset is well past the first rows.
     await waitFor(() => { expect(layout.scrollTo.mock.calls.some(([o]) => (o as { top: number }).top > 84)).toBe(true); });
   } finally { layout.restore(); }
@@ -1547,7 +1559,7 @@ test('a parent with 200,000 children flattens, folds and reveals without a stack
 
 test('flag badges show the highest severity, status icons follow verdicts, arrow keys move the selection', async () => {
   const cap = await treeSession();
-  const osa = procByPid(cap.model, 40753);
+  const osa = procByPid(cap.model, 7006);
   const row = await screen.findByText(/osascript/);
   const item = row.closest('[role="treeitem"]') as HTMLElement;
   expect(within(item).getByText('high')).toBeInTheDocument();
@@ -1561,17 +1573,17 @@ test('flag badges show the highest severity, status icons follow verdicts, arrow
 
 test('switching the mode keeps the selected process on screen', async () => {
   const cap = await treeSession();
-  const target = procNamed(cap.model, 'docker-tools');
+  const target = procNamed(cap.model, 'git');
   act(() => { ctx.showInTree(target.id); });
   await screen.findByRole('treeitem', { selected: true });
   await user.selectOptions(screen.getByLabelText(/parent mode/i), 'responsible');
-  expect(await screen.findByRole('treeitem', { selected: true })).toHaveTextContent('docker-tools');
+  expect(await screen.findByRole('treeitem', { selected: true })).toHaveTextContent('git');
 }, 60_000);
 
 test('triage filters and search survive a trip to another tab', async () => {
   render(<App />);
   await newSession('lab');
-  await user.upload(await screen.findByLabelText(/capture files/i), dropped('spritetree_demo.json'));
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
   await screen.findByRole('listbox', { name: 'Flagged processes' });
   await user.type(screen.getByRole('textbox', { name: /search/i }), 'curl');
   await user.click(screen.getByRole('checkbox', { name: 'low' }));
@@ -1674,11 +1686,11 @@ async function triageSession(first: FixtureName): Promise<{ store: Store; sessio
 }
 
 test('a note typed on capture A is saved under A when capture B finishes loading before blur', async () => {
-  const { store, sessionId, demo, procId } = await triageSession('shlayer.json');
+  const { store, sessionId, demo, procId } = await triageSession('synthetic-lab.jsonl');
   await user.type(screen.getByLabelText(/note/i), 'drops a payload');   // still focused, not yet saved
   expect(await store.listVerdicts(sessionId, demo.fingerprint)).toHaveLength(0);
 
-  await act(async () => { await ctx.loadFiles([dropped('rustbucket.json')]); });   // switches `active`, unmounts the note
+  await act(async () => { await ctx.loadFiles([dropped('synthetic-lab-4.jsonl')]); });   // switches `active`, unmounts the note
   expect(ctx.active).not.toBe(demo.fingerprint);
   await waitFor(async () => { expect(await store.listVerdicts(sessionId, demo.fingerprint)).toHaveLength(1); });
   const [v] = await store.listVerdicts(sessionId, demo.fingerprint);
@@ -1691,7 +1703,7 @@ test('a note typed on capture A is saved under A when capture B finishes loading
 }, 60_000);
 
 test('a note is saved while typing (debounced) and when the pane unmounts', async () => {
-  const { store, sessionId, demo, procId } = await triageSession('shlayer.json');
+  const { store, sessionId, demo, procId } = await triageSession('synthetic-lab.jsonl');
   await user.type(screen.getByLabelText(/note/i), 'first');
   await waitFor(async () => { expect((await store.listVerdicts(sessionId, demo.fingerprint))[0]?.note).toBe('first'); }, { timeout: 3000 });
 
@@ -1703,15 +1715,15 @@ test('a note is saved while typing (debounced) and when the pane unmounts', asyn
 }, 60_000);
 
 test('a note is saved when the page is hidden', async () => {
-  const { store, sessionId, demo } = await triageSession('shlayer.json');
+  const { store, sessionId, demo } = await triageSession('synthetic-lab.jsonl');
   await user.type(screen.getByLabelText(/note/i), 'leaving');
   act(() => { window.dispatchEvent(new Event('pagehide')); });
   await waitFor(async () => { expect((await store.listVerdicts(sessionId, demo.fingerprint))[0]?.note).toBe('leaving'); });
 }, 60_000);
 
 test('setVerdict can target a capture that is not the active one', async () => {
-  const { store, sessionId, demo, procId } = await triageSession('shlayer.json');
-  await act(async () => { await ctx.loadFiles([dropped('rustbucket.json')]); });
+  const { store, sessionId, demo, procId } = await triageSession('synthetic-lab.jsonl');
+  await act(async () => { await ctx.loadFiles([dropped('synthetic-lab-4.jsonl')]); });
   await act(async () => { await ctx.setVerdict(procId, 'benign', 'on A', demo.fingerprint); });
   expect(await store.listVerdicts(sessionId, demo.fingerprint)).toHaveLength(1);
   expect(await store.listVerdicts(sessionId, ctx.active!)).toHaveLength(0);

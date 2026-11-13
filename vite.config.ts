@@ -31,5 +31,5 @@ export default defineConfig(({ command }) => ({
   server: { fs: { allow: [path.resolve(import.meta.dirname, '..'), import.meta.dirname] } },
   // The dev-only fixture autoload needs the fixtures dir; a production build must not carry a local path.
   define: command === 'serve' ? { __FIXTURES_DIR__: JSON.stringify(path.resolve(import.meta.dirname, '..')) } : {},
-  test: { environment: 'node' },
+  test: { environment: 'node', globalSetup: ['test/global-setup.ts'] },
 }));

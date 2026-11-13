@@ -5,9 +5,10 @@ import { RULES } from '../src/rules/rules';
 import type { Image } from '../src/model/types';
 import type { FixtureName } from './fixtures';
 import { count, item, model, queued, rules, sev } from './helpers';
+import { realDescribe, realTest } from './real';
 import { apple, img, synth } from './synth';
 
-describe('es-lab must flag', () => {
+realDescribe('es-lab must flag', () => {
   test('fake prompt high', () => expect(sev('es-lab.jsonl', x => x.p?.pid === 40753)).toBe('high'));
   test('launchctl bootstrap high', () => expect(sev('es-lab.jsonl', x => x.p?.pid === 42279)).toBe('high'));
   test('studyguide persistence on cat, high', () => {
@@ -26,28 +27,28 @@ describe('es-lab must flag', () => {
   });
 });
 
-test('es-lab must not queue routine noise', () => {
+realTest('es-lab must not queue routine noise', () => {
   const names = queued('es-lab.jsonl').items.map(x => basename(x.paths.at(-1) ?? null));
   for (const n of ['ps', 'git', 'docker-tools', 'mdworker_shared']) expect(names).not.toContain(n);
 });
 
-test('es-lab queue stays small', () => expect(queued('es-lab.jsonl').items.length).toBeLessThanOrEqual(14));
+realTest('es-lab queue stays small', () => expect(queued('es-lab.jsonl').items.length).toBeLessThanOrEqual(14));
 
-test('es-lab team-signed Chrome clone under /var/folders is context-only', () => {
+realTest('es-lab team-signed Chrome clone under /var/folders is context-only', () => {
   const q = queued('es-lab.jsonl');
   expect(q.items.some(x => x.p?.pid === 8573)).toBe(false);
   const chrome = [...q.m.processes.values()].find(p => p.pid === 8573)!;
   expect(q.a.contextOnly.get(chrome.id)?.map(f => f.ruleId)).toContain('odd-location-exec');
 });
 
-describe('atomic stealer', () => {
+realDescribe('atomic stealer', () => {
   test('two fake prompts', () => expect(count('atomic_stealer.json', x => basename(x.paths.at(-1) ?? null) === 'osascript' && x.item.findings.some(f => f.ruleId === 'fake-prompt'))).toBe(2));
   test('dscl authonly high', () => expect(sev('atomic_stealer.json', x => x.args.includes('-authonly'))).toBe('high'));
   test('translocated ad-hoc app', () => expect(rules('atomic_stealer.json', x => x.paths.some(p => p?.includes('AppTranslocation')))).toContain('odd-location-exec')); // severity high: ad-hoc + odd location
   test('recon burst queued', () => expect(count('atomic_stealer.json', x => x.item.findings.every(f => f.ruleId === 'recon'))).toBeGreaterThanOrEqual(3));
 });
 
-describe('recon gating', () => {
+realDescribe('recon gating', () => {
   const reconOnly = RULES.filter(r => r.id === 'recon');
   test('a burst of distinct tools under one parent queues without a flagged chain', () => {
     const a = analyze(model('atomic_stealer.json'), reconOnly);
@@ -61,12 +62,12 @@ describe('recon gating', () => {
   });
 });
 
-describe('rustbucket', () => {
+realDescribe('rustbucket', () => {
   test('applet shell curl', () => expect(rules('rustbucket.json', x => x.args.includes('curl -o /users/shared/1.zip'))).toContain('shell-under-app'));
   test('Internal PDF Viewer', () => expect(sev('rustbucket.json', x => x.paths.some(p => p?.startsWith('/Users/Shared/Internal PDF Viewer.app')))).toBe('high'));
 });
 
-describe('shlayer', () => {
+realDescribe('shlayer', () => {
   test('payload in /tmp high', () => expect(sev('shlayer.json', x => x.paths.includes('/private/tmp/FaF74ncqmHBe/8CMt7kQ2jM3'))).toBe('high'));
   test('quarantine strip', () => expect(count('shlayer.json', x => x.item.findings.some(f => f.ruleId === 'quarantine-strip'))).toBeGreaterThanOrEqual(1));
   test('curl downloads', () => expect(count('shlayer.json', x => x.item.findings.some(f => f.ruleId === 'download'))).toBeGreaterThanOrEqual(1));
@@ -168,15 +169,17 @@ describe('download rule needs a file on disk', () => {
   });
 });
 
-test('every finding explains itself', () => {
-  for (const f of ['es-lab.jsonl', 'atomic_stealer.json', 'rustbucket.json', 'shlayer.json'] as const)
+const explains = (names: readonly FixtureName[]) => {
+  for (const f of names)
     for (const x of queued(f).items) for (const fd of x.item.findings) {
       expect(fd.explanation.length).toBeGreaterThan(20);
       if (!fd.trait) expect(fd.mitre.length).toBeGreaterThan(0);
     }
-});
+};
+test('every finding on the synthetic lab explains itself', () => explains(['synthetic-lab.jsonl']));
+realTest('every finding explains itself', () => explains(['es-lab.jsonl', 'atomic_stealer.json', 'rustbucket.json', 'shlayer.json']));
 
-test('queue size per fixture is recorded', () => {
+realTest('queue size per fixture is recorded', () => {
   const sizes: Partial<Record<FixtureName, number>> = {};
   for (const f of ['es-lab.jsonl', 'atomic_stealer.json', 'rustbucket.json', 'shlayer.json'] as const)
     sizes[f] = queued(f).items.length;

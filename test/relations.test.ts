@@ -3,15 +3,18 @@ import { ancestry, childrenIndex, displayName, resolveRelations, type ParentMode
 import type { CaptureModel, Process } from '../src/model/types';
 import { model, procByPid } from './helpers';
 import type { FixtureName } from './fixtures';
+import { realTest } from './real';
 
-const m = model('es-lab.jsonl');
+const esLab = () => model('es-lab.jsonl');
 
-test('orphan: current parent is launchd, original is the subshell', () => {
+realTest('orphan: current parent is launchd, original is the subshell', () => {
+  const m = esLab();
   const s = procByPid(m, 41282);
   expect(m.processes.get(s.currentParent!)!.pid).toBe(1);
   expect(s.originalParent).toBe('41281:3563740');
 });
-test('ghost nodes for pre-capture parents', () => {
+realTest('ghost nodes for pre-capture parents', () => {
+  const m = esLab();
   const zsh = m.processes.get(m.tokenIndex.get('35213:3556708')!)!;
   const parent = m.processes.get(zsh.originalParent!)!;
   expect(parent.ghost).toBe(true);
@@ -19,23 +22,28 @@ test('ghost nodes for pre-capture parents', () => {
   expect(displayName(m, parent.id)).toBe('pid 35212 · started before capture');
   expect(m.processes.get(zsh.responsible!)!.pid).toBe(35209);
 });
-test('persistence item attributed to the plist creator', () => {
+realTest('persistence item attributed to the plist creator', () => {
+  const m = esLab();
   const item = m.persistence.find(p => p.plistPath?.endsWith('com.test.studyguide.plist'))!;
   expect(procByPid(m, 41865).id).toBe(item.creator);
 });
-test('GoogleUpdater item has no creator in capture', () => {
+realTest('GoogleUpdater item has no creator in capture', () => {
+  const m = esLab();
   expect(m.persistence.find(p => p.plistPath?.includes('GoogleUpdater'))!.creator).toBeNull();
 });
-test('ancestry of osascript reaches zsh 35213', () => {
+realTest('ancestry of osascript reaches zsh 35213', () => {
+  const m = esLab();
   const chain = ancestry(m, procByPid(m, 40753).id).map(id => m.processes.get(id)!.pid);
   expect(chain.slice(0, 2)).toEqual([35213, 35212]);
 });
-test('pre-capture parent is one ghost across modes', () => {
+realTest('pre-capture parent is one ghost across modes', () => {
+  const m = esLab();
   const zsh = m.processes.get(m.tokenIndex.get('35213:3556708')!)!;
   expect(zsh.originalParent).toBe(zsh.currentParent);
   expect([...m.processes.values()].filter(p => p.pid === 35212)).toHaveLength(1);
 });
-test('every process appears exactly once in childrenIndex for each mode', () => {
+realTest('every process appears exactly once in childrenIndex for each mode', () => {
+  const m = esLab();
   const ids = [...m.processes.keys()].sort();
   for (const mode of ['original', 'current', 'responsible'] as ParentMode[]) {
     const all = [...childrenIndex(m, mode).values()].flat();
@@ -132,20 +140,35 @@ test('PID reuse: the latest earlier-started holder of the pid is still the paren
   expect(d.currentParent).toBe('500:2');
   expect(h.tokenIndex.get('500:1')).toBe('500:2');
 });
-test('fixtures: no resolved parent other than launchd started after its child; ghost counts unchanged', () => {
-  const ghosts: Record<FixtureName, number> = {
+/** No resolved parent other than launchd started after its child; returns the ghost count. */
+function ghostsAndStartOrder(name: FixtureName): number {
+  const fm = model(name);
+  for (const p of fm.processes.values()) {
+    for (const id of [p.originalParent, p.currentParent]) {
+      const par = id === null ? undefined : fm.processes.get(id);
+      if (!par || par.pid === 1 || !par.startTime || !p.startTime) continue;
+      expect(Date.parse(par.startTime) <= Date.parse(p.startTime), `${name} ${p.id} <- ${par.id}`).toBe(true);
+    }
+  }
+  return [...fm.processes.values()].filter(p => p.ghost).length;
+}
+
+test('synthetic lab: no resolved parent other than launchd started after its child; four pre-capture ghosts', () => {
+  expect(ghostsAndStartOrder('synthetic-lab.jsonl')).toBe(4);   // login, Terminal, the second shell's parent and responsible
+});
+test('synthetic lab: every process appears exactly once in childrenIndex for each mode', () => {
+  const m = model('synthetic-lab.jsonl');
+  const ids = [...m.processes.keys()].sort();
+  for (const mode of ['original', 'current', 'responsible'] as ParentMode[]) {
+    expect([...childrenIndex(m, mode).values()].flat().sort()).toEqual(ids);
+  }
+});
+realTest('fixtures: no resolved parent other than launchd started after its child; ghost counts unchanged', () => {
+  const ghosts: Record<string, number> = {
     'es-lab.jsonl': 6, 'atomic_stealer.json': 3, 'rustbucket.json': 0, 'shlayer.json': 2, 'spritetree_demo.json': 0,
   };
   for (const [name, n] of Object.entries(ghosts) as [FixtureName, number][]) {
-    const fm = model(name);
-    expect([...fm.processes.values()].filter(p => p.ghost), name).toHaveLength(n);
-    for (const p of fm.processes.values()) {
-      for (const id of [p.originalParent, p.currentParent]) {
-        const par = id === null ? undefined : fm.processes.get(id);
-        if (!par || par.pid === 1 || !par.startTime || !p.startTime) continue;
-        expect(Date.parse(par.startTime) <= Date.parse(p.startTime), `${name} ${p.id} <- ${par.id}`).toBe(true);
-      }
-    }
+    expect(ghostsAndStartOrder(name), name).toBe(n);
   }
   // v6: launchd's start time is later than its pre-capture children's, and it stays their parent.
   const v6 = model('atomic_stealer.json');

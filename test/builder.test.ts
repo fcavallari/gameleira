@@ -3,37 +3,44 @@ import { buildModel } from '../src/model/builder';
 import { displayName } from '../src/model/relations';
 import { imagePaths, model, procByPid } from './helpers';
 import { readLines } from './fixtures';
+import { realTest } from './real';
 
-const m = model('es-lab.jsonl');
+const esLab = () => model('es-lab.jsonl');
 
-test('exec chain is one process', () => {
+realTest('exec chain is one process', () => {
+  const m = esLab();
   const p = procByPid(m, 41283);
   expect(p.id).toBe('41283:3563742');
   expect(imagePaths(p)).toEqual(['/bin/zsh', '/usr/bin/nohup', '/bin/sleep']);
   expect(m.tokenIndex.get('41283:3563751')).toBe(p.id);
 });
-test('fork edge recorded', () => {
+realTest('fork edge recorded', () => {
+  const m = esLab();
   expect(procByPid(m, 41282).forkParent).toBe('41281:3563740');
 });
-test('pre-capture process referenced only by token is a ghost', () => {
+realTest('pre-capture process referenced only by token is a ghost', () => {
+  const m = esLab();
   const zsh = m.processes.get(m.tokenIndex.get('35213:3556708')!)!;
   expect(zsh.parentToken).toBe('35212:3556705');
   expect(zsh.responsibleToken).toBe('35209:3556698');
 });
-test('file op lands on the merged process (plist on cat)', () => {
+realTest('file op lands on the merged process (plist on cat)', () => {
+  const m = esLab();
   const cat = procByPid(m, 41865);
   expect(imagePaths(cat).at(-1)).toBe('/bin/cat');
   expect(cat.fileOps.some(f => f.path.endsWith('/Library/LaunchAgents/com.test.studyguide.plist'))).toBe(true);
 });
-test('fork child image is inherited, exec image is not', () => {
+realTest('fork child image is inherited, exec image is not', () => {
+  const m = esLab();
   const p = procByPid(m, 41283);
   expect(p.images[0]!.inherited).toBe(true);
   expect(p.images[1]!.inherited).toBe(false);
 });
-test('exit sets exitTime', () => {
+realTest('exit sets exitTime', () => {
+  const m = esLab();
   expect(procByPid(m, 40490).exitTime).not.toBeNull();   // whoami
 });
-test('process seen only in its own events keeps its path', () => {
+realTest('process seen only in its own events keeps its path', () => {
   const sh = model('shlayer.json');
   const ps = [...sh.processes.values()].filter(p => p.pid === 35970);
   expect(ps).toHaveLength(1);
@@ -44,12 +51,13 @@ test('process seen only in its own events keeps its path', () => {
   expect(img.signingId).toBeNull();
   expect(img.inherited).toBe(false);
 });
-test('stats', () => {
+realTest('stats', () => {
+  const m = esLab();
   expect(m.stats.events).toBe(11610);
   expect(m.stats.badLines).toBe(0);
   expect(m.stats.versions).toEqual([11]);
 });
-test('es-lab builds in under 5s', () => {
+realTest('es-lab builds in under 5s', () => {
   const lines = readLines('es-lab.jsonl');
   const t0 = performance.now();
   buildModel(lines);
@@ -158,7 +166,8 @@ test('events named after Object.prototype keys are counted as other', () => {
   expect(m9.stats.otherEvents).toEqual({ constructor: 2, toString: 1, ['__proto__']: 1 });
   expect(Object.getPrototypeOf(m9.stats.otherEvents)).toBe(Object.prototype);
 });
-test('es-lab studyguide btm item: agent type, emitted by backgroundtaskmanagementd, instigated by smd', () => {
+realTest('es-lab studyguide btm item: agent type, emitted by backgroundtaskmanagementd, instigated by smd', () => {
+  const m = esLab();
   const item = m.persistence.find(p => p.plistPath?.endsWith('/Library/LaunchAgents/com.test.studyguide.plist'))!;
   expect(item.itemType).toBe(3);
   expect(displayName(m, item.emitter)).toBe('backgroundtaskmanagementd');

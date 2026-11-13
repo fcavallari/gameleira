@@ -64,15 +64,15 @@ test('routine add/list/remove', async () => {
   expect(await store.listRoutine(s.id)).toHaveLength(0);
 });
 test('routine hides matching programs and counts them', () => {
-  const { m, a } = queued('es-lab.jsonl');
-  const curl = procByPid(m, 39838);
-  const r = applyRoutine(a, m, new Set([programKey(latestImage(curl)!)]));
-  expect(r.queue.some(q => q.procId === curl.id)).toBe(false);
+  const { m, a } = queued('synthetic-lab.jsonl');
+  const bash = procByPid(m, 7004);
+  const r = applyRoutine(a, m, new Set([programKey(latestImage(bash)!)]));
+  expect(r.queue.some(q => q.procId === bash.id)).toBe(false);
   expect(r.hiddenCount).toBeGreaterThanOrEqual(1);
   expect(r.queue.length + r.hiddenCount).toBe(a.queue.length);
 });
 test('routine never hides persistence-only items', () => {
-  const { m, a } = queued('es-lab.jsonl');
+  const { m, a } = queued('synthetic-lab.jsonl');
   const keys = new Set([...m.processes.values()].flatMap(p => p.images.map(programKey)));
   const r = applyRoutine(a, m, keys);
   expect(r.queue.filter(q => q.kind === 'persistence')).toHaveLength(a.queue.filter(q => q.kind === 'persistence').length);
