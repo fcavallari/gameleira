@@ -32,6 +32,7 @@ export function ImportSession() {
 export function ConfirmedTab() {
   const c = useSession();
   const [includeEnv, setIncludeEnv] = useState(false);
+  const [redactArgs, setRedactArgs] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const session = c.session!;
   const fileName = (fp: string): string => c.capRecs.find(r => r.fingerprint === fp)?.fileName ?? 'unknown capture';
@@ -42,7 +43,7 @@ export function ConfirmedTab() {
   const doExport = async () => {
     setError(null);
     try {
-      const data = await exportSession(c.store, session.id, { includeEnv }, c.captures);
+      const data = await exportSession(c.store, session.id, { includeEnv, redactArgs }, c.captures);
       const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
       const a = document.createElement('a');
       a.href = url;
@@ -61,9 +62,13 @@ export function ConfirmedTab() {
       <div className="row">
         <button className="primary" onClick={() => { void doExport(); }}>Export session</button>
         <label className="inline"><input type="checkbox" checked={includeEnv} onChange={e => { setIncludeEnv(e.target.checked); }} /> Include environment variables</label>
+        <label className="inline"><input type="checkbox" checked={redactArgs} onChange={e => { setRedactArgs(e.target.checked); }} /> Redact command-line arguments</label>
       </div>
       <p className="muted small">
-        Process details are exported for captures that are loaded now. Environment variables can hold secrets; leave them out unless needed.
+        The export includes the full command line of every verdict, and those can contain secrets such as passwords
+        (for example <code>dscl . -authonly user password</code>). Tick “Redact command-line arguments” to replace every argument
+        after the program name with [redacted]. Process details are exported for captures that are loaded now.
+        Environment variables can hold secrets too; leave them out unless needed.
       </p>
       {error && <p role="alert" className="error">{error}</p>}
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { openStore, type Store } from '../session/store';
+import { ErrorBoundary } from './ErrorBoundary';
 import { SessionProvider, useSession } from './session-context';
 import { SessionScreen } from './SessionScreen';
 import { StartScreen } from './StartScreen';
@@ -13,7 +14,11 @@ function Screens() {
 }
 
 /** `store` is a test seam; the app opens its own IndexedDB store. */
-export function App({ store: injected }: { store?: Store } = {}) {
+export function App(props: { store?: Store } = {}) {
+  return <ErrorBoundary><Storage {...props} /></ErrorBoundary>;
+}
+
+function Storage({ store: injected }: { store?: Store }) {
   const [store, setStore] = useState<Store | null>(injected ?? null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {

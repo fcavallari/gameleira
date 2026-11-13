@@ -14,6 +14,7 @@ import { displayName } from '../src/model/relations';
 import type { CaptureModel, Image, Process } from '../src/model/types';
 import { basename, latestImage } from '../src/model/util';
 import { forestOf, flatten, keepSet, makeFoldInfo, revealKeys } from '../src/ui/tree-model';
+import { ErrorBoundary } from '../src/ui/ErrorBoundary';
 import { App, SessionContext, SessionProvider, useSession, type SessionCtx } from '../src/ui/App';
 import { SessionScreen } from '../src/ui/SessionScreen';
 import { TreeView } from '../src/ui/TreeView';
@@ -234,12 +235,65 @@ test('Confirmed tab lists confirmed verdicts of every capture, labelled; export 
   expect((await store.listSessions()).map(x => x.name).sort()).toEqual(['lab', 'lab (imported)']);
 });
 
+test('the export says it carries command lines (which can hold secrets), and "Redact command-line arguments" strips them', async () => {
+  const store = await openStore();
+  const s = await store.createSession('lab');
+  await store.upsertCapture({ sessionId: s.id, fingerprint: 'fpA', fileName: 'monday.jsonl', size: 1, events: 1, processes: 1, flagged: 0, added: 't' });
+  const v = seedVerdict(s.id, 'fpA', 'p1', 'confirmed', 'x');
+  await store.setVerdict({ ...v, snapshot: { ...v.snapshot, args: ['dscl', '.', '-authonly', 'sandy', 'hunter2'] } });
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: 'lab' }));
+  await user.click(await screen.findByRole('tab', { name: 'Confirmed' }));
+  expect(screen.getByText(/full command line/i)).toHaveTextContent(/secrets such as passwords/);
+  const redact = screen.getByLabelText(/redact command-line arguments/i);
+  expect(redact).not.toBeChecked();
+  const exportText = async (nth: number): Promise<string> => {
+    await user.click(screen.getByRole('button', { name: /export session/i }));
+    await waitFor(() => { expect(vi.mocked(URL.createObjectURL).mock.calls.length).toBeGreaterThan(nth); });
+    return readBlob(vi.mocked(URL.createObjectURL).mock.calls[nth]![0] as Blob);
+  };
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+  expect(await exportText(0)).toContain('hunter2');
+  await user.click(redact);
+  const redacted = await exportText(1);
+  expect(redacted).not.toContain('hunter2');
+  expect(redacted).toContain('[redacted]');
+  // the Confirmed list itself still shows what is stored
+  expect(screen.getByText(/hunter2/)).toBeInTheDocument();
+});
+
 test('import shows the error for a file that is not a session export', async () => {
   render(<App />);
   await newSession('lab');
   await user.click(await screen.findByRole('tab', { name: 'Confirmed' }));
   await user.upload(screen.getByLabelText(/import session/i), new File(['{"nope":1}'], 'x.json'));
   expect(await screen.findByText(/not an eslogger-viewer session export/)).toBeInTheDocument();
+});
+
+function Boom(): never { throw new Error('boom'); }
+
+test('an error in a screen shows a reload message and leaves stored sessions alone', async () => {
+  const store = await openStore();
+  const s = await store.createSession('keep me');
+  await store.upsertCapture({ sessionId: s.id, fingerprint: 'fp', fileName: 'a.jsonl', size: 1, events: 1, processes: 1, flagged: 0, added: 't' });
+  await store.setVerdict(seedVerdict(s.id, 'fp', 'p1', 'confirmed', 'note'));
+  vi.spyOn(console, 'error').mockImplementation(() => undefined);   // React logs the caught error
+  const reload = vi.fn();
+  render(<ErrorBoundary onReload={reload}><Boom /></ErrorBoundary>);
+  expect(screen.getByRole('alert')).toHaveTextContent('Something went wrong — reload. Your sessions are saved.');
+  await user.click(screen.getByRole('button', { name: 'Reload' }));
+  expect(reload).toHaveBeenCalledTimes(1);
+  expect((await store.listSessions()).map(x => x.name)).toEqual(['keep me']);
+  expect(await store.listVerdicts(s.id)).toHaveLength(1);
+});
+
+test('App shows the boundary instead of a blank page when a screen throws', async () => {
+  const real = await openStore();
+  const store = new Proxy(real, { get: (t, k: string) => (k === 'listSessions' ? () => Promise.resolve([{ id: 'x', name: { not: 'text' }, created: 't', updated: 't' }]) : t[k as keyof Store]) });
+  vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  render(<App store={store as Store} />);
+  expect(await screen.findByRole('alert')).toHaveTextContent(/Something went wrong — reload\. Your sessions are saved\./);
+  expect(screen.getByRole('button', { name: 'Reload' })).toBeInTheDocument();
 });
 
 test('start screen: rename and delete (with confirm); storage footer', async () => {

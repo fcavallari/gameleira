@@ -92,10 +92,88 @@ test('import rejects verdicts the screens could not render (bad status, snapshot
   expect(await store.listSessions()).toEqual(before);
   await importSession(store, out);   // the untouched export still imports
 });
+test('import rejects a snapshot severity or start time the screens could not render, and malformed capture and routine rows', async () => {
+  const out = await exportSession(store, s.id, { includeEnv: false });
+  const before = await store.listSessions();
+  const v = out.verdicts[0]!;
+  const badVerdicts = [
+    { ...v, snapshot: { ...v.snapshot, severity: 'critical' } },
+    { ...v, snapshot: { ...v.snapshot, severity: 3 } },
+    { ...v, snapshot: { ...v.snapshot, severity: undefined } },
+    { ...v, snapshot: { ...v.snapshot, startTime: 5 } },
+    { ...v, snapshot: { ...v.snapshot, startTime: undefined } },
+    { ...v, updated: 5 },
+  ];
+  for (const row of badVerdicts) {
+    await expect(importSession(store, { ...out, verdicts: [row] } as never)).rejects.toThrow(/bad row 0 in "verdicts"/);
+  }
+  const c = out.captures[0]!;
+  for (const row of [{ ...c, fileName: 5 }, { ...c, fileName: undefined }, { ...c, size: '1' }, { ...c, events: null }, { ...c, processes: undefined },
+    { ...c, flagged: Infinity }, { ...c, added: 1 }]) {
+    await expect(importSession(store, { ...out, captures: [row] } as never)).rejects.toThrow(/bad row 0 in "captures"/);
+  }
+  const r = out.routine[0]!;
+  for (const row of [{ ...r, label: 7 }, { ...r, added: undefined }]) {
+    await expect(importSession(store, { ...out, routine: [row] } as never)).rejects.toThrow(/bad row 0 in "routine"/);
+  }
+  expect(await store.listSessions()).toEqual(before);
+  await importSession(store, { ...out, verdicts: out.verdicts.map(x => ({ ...x, snapshot: { ...x.snapshot, severity: null } })) });   // null severity is fine
+});
+test('the hand-edited file from the review (fileName: 5, two confirmed verdicts) is rejected, not imported', async () => {
+  const out = await exportSession(store, s.id, { includeEnv: false });
+  const confirmed = { ...out.verdicts[0]!, status: 'confirmed' as const };
+  const edited = { ...out, captures: [{ ...out.captures[0]!, fileName: 5 }],
+    verdicts: [confirmed, { ...confirmed, procKey: 'other' }] };
+  await expect(importSession(store, edited as never)).rejects.toThrow(/bad row 0 in "captures"/);
+});
+
 test('store.importAll is atomic when a write fails mid-transaction', async () => {
   const before = await store.listSessions();
   const good = (await store.listCaptures(s.id))[0]!;
   const bad = { ...good, fingerprint: { x: 1 } as never };   // invalid key: DataError after earlier puts were queued
   await expect(store.importAll('x', [good, bad], [], [])).rejects.toThrow();
   expect(await store.listSessions()).toEqual(before);
+});
+
+
+// --- command lines in exports ------------------------------------------------------------------------------------
+
+/** atomic_stealer runs `dscl . -authonly sandy <password>`: a password sits in argv. */
+async function atomicExport(opts: { includeEnv: boolean; redactArgs?: boolean }): Promise<{ out: Awaited<ReturnType<typeof exportSession>>; key: string }> {
+  const { m, a } = queued('atomic_stealer.json');
+  const p = [...m.processes.values()].find(x => x.images.some(i => i.args?.includes('-authonly')))!;
+  const img = [...p.images].reverse().find(i => i.args)!;
+  const cap = { fingerprint: 'fa', fileName: 'atomic_stealer.json', size: 1, model: m, analysis: a };
+  const t = await store.createSession('atomic');
+  await store.upsertCapture({ sessionId: t.id, fingerprint: 'fa', fileName: 'atomic_stealer.json', size: 1, events: 1, processes: 1, flagged: 1, added: 't' });
+  await store.setVerdict({ sessionId: t.id, fingerprint: 'fa', procKey: p.id, status: 'confirmed', note: '', updated: 't',
+    snapshot: { name: 'dscl', path: img.path, args: img.args, ruleIds: ['dscl-authonly'], severity: 'high', startTime: p.startTime } });
+  return { out: await exportSession(store, t.id, opts, new Map([['fa', cap]])), key: `fa|${p.id}` };
+}
+
+test('by default an export carries command lines, as stored (and the secret in them)', async () => {
+  const { out, key } = await atomicExport({ includeEnv: false });
+  expect(JSON.stringify(out)).toContain('sandybachs');
+  expect(out.verdicts[0]!.snapshot.args).toContain('sandybachs');
+  expect(out.details[key]!.args).toContain('sandybachs');
+});
+
+test('"redact command-line arguments" replaces every argument after argv[0] in snapshots and details', async () => {
+  const { out, key } = await atomicExport({ includeEnv: false, redactArgs: true });
+  expect(JSON.stringify(out)).not.toContain('sandybachs');
+  expect(JSON.stringify(out)).not.toContain('sandy');   // neither the password nor the account
+  const snap = out.verdicts[0]!.snapshot.args!;
+  expect(snap[0]).toMatch(/dscl$/);
+  expect(snap.slice(1).every(x => x === '[redacted]')).toBe(true);
+  expect(snap.length).toBeGreaterThan(2);   // one marker per argument
+  const d = out.details[key]!;
+  expect(d.args![0]).toMatch(/dscl$/);
+  expect(d.args!.slice(1).every(x => x === '[redacted]')).toBe(true);
+  for (const img of d.images) if (img.args) expect(img.args.slice(1).every(x => x === '[redacted]')).toBe(true);
+});
+
+test('redacting leaves the stored verdict alone', async () => {
+  const { out } = await atomicExport({ includeEnv: false, redactArgs: true });
+  const stored = (await store.listVerdicts(out.session.id))[0]!;
+  expect(stored.snapshot.args).toContain('sandybachs');
 });
