@@ -46,3 +46,9 @@ export function itemPathKind(path: string | null): 'plist' | 'app' | 'other' | n
   if (/\.plist$/i.test(path)) return 'plist';
   return /\.app\/*$/i.test(path) ? 'app' : 'other';
 }
+
+/** A relative path joined to the app bundle it is relative to; anything else (absolute, or no usable app) is returned as it is. */
+export function resolveAgainstApp(path: string | null, app: string | null): string | null {
+  if (path === null || path.startsWith('/') || app === null || !app.startsWith('/')) return path;
+  return `${app.replace(/\/+$/, '')}/${path.replace(/^\.\//, '')}`;
+}

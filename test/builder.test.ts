@@ -129,6 +129,21 @@ test('btm, other events and line stats', () => {
     lines: 4, events: 2, badLines: 1, otherEvents: { mmap: 1 }, versions: [11], firstSeq: 1,
   });
 });
+test('a btm item URL relative to the app is made absolute against the app URL, like the executable path', () => {
+  const m = buildModel([
+    ev(1, proc('600:1', { path: '/usr/libexec/smd' }), { btm_launch_item_add: {
+      item: { item_type: 3, item_url: 'Contents/Library/LaunchAgents/com.evil.helper.plist', app_url: 'file:///Applications/Evil.app/' },
+      executable_path: 'Contents/MacOS/helper',
+    } }),
+    ev(2, proc('600:1'), { btm_launch_item_add: { item: { item_type: 3, item_url: 'relative/x.plist' } } }),   // no app: stays as given
+    ev(3, proc('600:1'), { btm_launch_item_add: { item: { item_type: 1, item_url: 'file:///Applications/Evil.app/', app_url: 'file:///Applications/Evil.app/' } } }),
+  ]);
+  const [a, b, c] = m.persistence;
+  expect(a!.plistPath).toBe('/Applications/Evil.app/Contents/Library/LaunchAgents/com.evil.helper.plist');
+  expect(a!.appPath).toBe('/Applications/Evil.app/');
+  expect(b!.plistPath).toBe('relative/x.plist');
+  expect(c!.plistPath).toBe('/Applications/Evil.app/');
+});
 test('events named after Object.prototype keys are counted as other', () => {
   const lines = ['constructor', 'toString', '__proto__', 'constructor'].map((k, i) =>
     `{"global_seq_num":${i + 1},"time":"t","version":11,"process":{"audit_token":{"pid":1,"pidversion":1}},"event":{"${k}":{}}}`);

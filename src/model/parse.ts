@@ -1,5 +1,5 @@
 import type { BtmInfo, EventKind, NormEvent, ProcInfo, TokenKey } from './types';
-import { fileUrlToPath } from './util';
+import { fileUrlToPath, resolveAgainstApp } from './util';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Json = any;
@@ -61,10 +61,12 @@ function btmInfo(e: Json): BtmInfo {
   const instigator = optProcInfo(e.instigator);
   const app = optProcInfo(e.app);
   const itemType = e.item?.item_type;
+  const appPath = fileUrlToPath(e.item?.app_url ?? null);
   return {
-    plistPath: fileUrlToPath(e.item?.item_url ?? null),
+    // A relative item URL is relative to the app's, as the executable path is; resolved once here so every screen and rule sees one path.
+    plistPath: resolveAgainstApp(fileUrlToPath(e.item?.item_url ?? null), appPath),
     executablePath: e.executable_path ?? null,
-    appPath: fileUrlToPath(e.item?.app_url ?? null),
+    appPath,
     itemType: typeof itemType === 'number' ? itemType : null,
     instigator,
     instigatorToken: tokenOf(e.instigator_token) ?? instigator?.token ?? null,
