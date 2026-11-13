@@ -64,11 +64,14 @@ export const WGET_SPEC: OptSpec = {
   longValues: ['--output-document', '--output-file', '--append-output', '--input-file', '--user-agent', '--header',
     '--post-data', '--post-file', '--directory-prefix', '--tries', '--timeout', '--wait', '--user', '--password', '--referer',
     '--load-cookies', '--save-cookies', '--execute', '--base', '--level', '--accept', '--reject', '--domains', '--quota',
-    '--limit-rate', '--method', '--body-data', '--body-file'],
+    '--limit-rate', '--method', '--body-data', '--body-file', '--ca-certificate', '--ca-directory', '--certificate',
+    '--private-key'],
 };
-/** A URL: `scheme://…`, or `host.tld` with an optional port and path. */
+/** A URL: `scheme://…`; `host.tld` with an optional port and path; or a single-label host with a port or path (`localhost:8080`, `intranet/x`). */
 export const looksLikeUrl = (s: string): boolean =>
-  /^[a-z][a-z0-9+.-]*:\/\//i.test(s) || /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:\/|$)/i.test(s);
+  /^[a-z][a-z0-9+.-]*:\/\//i.test(s)
+  || /^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:\/|$)/i.test(s)
+  || /^[a-z0-9-]+(?::\d+(?:\/|$)|\/)/i.test(s);
 
 /** Interpreters that read a script from stdin when given none, and how their arguments say otherwise. */
 export interface PipeLang {
@@ -77,34 +80,38 @@ export interface PipeLang {
   stdinFlag: string;       // short letter meaning "read commands from stdin"
   valueOpts: string[];     // short options taking the next argument as a value
   attached: string;        // short letters that carry their value in the same argument
-  probes: string[];        // arguments that only print a version or help and exit
+  probes: string[];        // arguments that only print a version or help and exit (only before the program starts)
   longs: string[];         // long options known to take no value; any other long option means "can't tell"
   longValues: string[];    // long options taking the next argument as a value
 }
-const PROBES = ['--version', '--help', '-V', '-h'];
+/** For shells only the long forms are probes: `bash -h` is `set -h` and `zsh -V` / `dash -V` set options, and both still run piped commands. */
+const SHELL_PROBES = ['--version', '--help'];
+const INTERP_PROBES = ['--version', '--help', '-V', '-VV', '-h'];
 export const PIPE_LANGS: [RegExp, PipeLang][] = [
-  // -c: the command is an argument; -s: read commands from stdin (the rest are positional parameters); -o/+o take an option name.
+  // -c: the command is an argument; -s: read commands from stdin (the rest are positional parameters);
+  // -o/+o and bash's -O/+O take an option name.
   [/^(?:sh|bash|zsh|dash|ksh|csh|tcsh)$/, {
-    mitre: 'T1059.004', inline: 'c', stdinFlag: 's', valueOpts: ['-o', '+o'], attached: '', probes: PROBES,
+    mitre: 'T1059.004', inline: 'c', stdinFlag: 's', valueOpts: ['-o', '+o', '-O', '+O'], attached: '', probes: SHELL_PROBES,
     longs: ['--login', '--norc', '--noprofile', '--posix', '--noediting', '--restricted', '--verbose', '--no-rcs', '--no-globalrcs', '--interactive'],
     longValues: ['--rcfile', '--init-file'],
   }],
   // -c code, -m module; -W and -X take a value.
-  [/^python[0-9.]*$/, { mitre: 'T1059.006', inline: 'cm', stdinFlag: '', valueOpts: ['-W', '-X'], attached: 'WX', probes: PROBES, longs: [], longValues: [] }],
+  [/^python[0-9.]*$/, { mitre: 'T1059.006', inline: 'cm', stdinFlag: '', valueOpts: ['-W', '-X'], attached: 'WX', probes: INTERP_PROBES, longs: [], longValues: [] }],
   // -e/-E code (also in clusters such as -ne, -0777pe); -I, -M, -m, -x, -d carry their value attached; -v prints the version.
-  [/^perl[0-9.]*$/, { mitre: 'T1059', inline: 'eE', stdinFlag: '', valueOpts: [], attached: 'IMmxd', probes: [...PROBES, '-v'], longs: [], longValues: [] }],
+  [/^perl[0-9.]*$/, { mitre: 'T1059', inline: 'eE', stdinFlag: '', valueOpts: [], attached: 'IMmxd', probes: [...INTERP_PROBES, '-v'], longs: [], longValues: [] }],
   // -e code; -I, -r, -C, -E take a value; -v prints the version.
-  [/^ruby[0-9.]*$/, { mitre: 'T1059', inline: 'e', stdinFlag: '', valueOpts: ['-I', '-r', '-C', '-E'], attached: 'IrCE', probes: [...PROBES, '-v'], longs: [], longValues: [] }],
+  [/^ruby[0-9.]*$/, { mitre: 'T1059', inline: 'e', stdinFlag: '', valueOpts: ['-I', '-r', '-C', '-E'], attached: 'IrCE', probes: [...INTERP_PROBES, '-v'], longs: [], longValues: [] }],
 ];
 
 /**
  * True when an interpreter with these arguments (argv[0] first) reads its program from stdin: no inline code, no
- * script file argument (or `-`), not a version/help probe, and no long option we can't account for.
+ * script file argument (or `-`), not a version/help probe, and no long option we can't account for. Options are read
+ * only up to the first `-`, `--`, `-s` or script argument: what follows belongs to the script (`sh -s -- --version 1.2`).
  */
 export function readsStdin(lang: PipeLang, a: string[]): boolean {
-  if (a.slice(1).some(x => lang.probes.includes(x))) return false;
   for (let i = 1; i < a.length; i++) {
     const x = a[i]!;
+    if (lang.probes.includes(x)) return false;
     if (x === '-') return true;
     if (x === '--') return a[i + 1] === undefined;
     if (x.startsWith('--')) {

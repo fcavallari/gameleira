@@ -626,10 +626,12 @@ describe('fix round 1', () => {
       expect(writer(op('create', '/Users/u/Library/LaunchAgents/x.plist.tmp'), op('rename', '/Users/u/Library/LaunchAgents/x.plist.tmp', 3, '/Users/u/Library/LaunchAgents/x.plist'))?.evidence)
         .toMatch(/x\.plist$/);
     });
-    test('explanations say RunAtLoad/KeepAlive, and /Library/LaunchAgents is every user', () => {
+    test('explanations name the launchd triggers, and /Library/LaunchAgents is every user', () => {
       const f = analyze(capture([], [persistenceItem({ itemType: 3, plistPath: '/Library/LaunchAgents/x.plist', executablePath: '/Applications/X.app/Contents/MacOS/X' })])).queue[0]!.findings[0]!;
       expect(f.explanation).toMatch(/every user/);
-      expect(f.explanation).toMatch(/RunAtLoad\/KeepAlive/);
+      expect(f.explanation).toMatch(/RunAtLoad/);
+      expect(f.explanation).toMatch(/StartCalendarInterval/);
+      expect(f.explanation).toMatch(/WatchPaths/);
     });
   });
 
@@ -708,5 +710,139 @@ describe('fix round 1', () => {
       expect(owner(proc('903:1', [apple('/bin/launchctl', ['launchctl', 'load', 'x'])]))).toBe('903:1'));
     test('a non-platform binary under /Library is attached to', () =>
       expect(owner(proc('904:1', [img({ path: '/Library/Application Support/X/helper', signingId: 'x', teamId: 'T' })]))).toBe('904:1'));
+  });
+});
+
+describe('fix round 2', () => {
+  const findingsOf = (path: string, args: string[], o: Parameters<typeof apple>[2] = {}) =>
+    allFindings(analyze(capture([proc('100:1', [apple(path, args, o)])])));
+  const ruleIds = (path: string, args: string[], o: Parameters<typeof apple>[2] = {}) => findingsOf(path, args, o).map(f => f.ruleId);
+  const find = (id: string, path: string, args: string[]) => findingsOf(path, args).find(f => f.ruleId === id);
+
+  describe('shell-from-pipe: probes only for what they are, and only before the script starts', () => {
+    const fires = (path: string, args: string[]) => ruleIds(path, args, { stdinIsPipe: true }).includes('shell-from-pipe');
+    test('shell flags that look like probes still run piped commands', () => {
+      expect(fires('/bin/bash', ['bash', '-h'])).toBe(true);
+      expect(fires('/bin/zsh', ['zsh', '-V'])).toBe(true);
+      expect(fires('/bin/bash', ['bash', '-O', 'extglob'])).toBe(true);
+      expect(fires('/bin/bash', ['bash', '+O', 'extglob'])).toBe(true);
+    });
+    test('arguments for the piped script are not probes', () => {
+      expect(fires('/bin/sh', ['sh', '-s', '--', '--version', '1.2.3'])).toBe(true);
+      expect(fires('/bin/bash', ['bash', '-s', '--', '-h'])).toBe(true);
+      expect(fires('/usr/bin/python3', ['python3', '-', '-h'])).toBe(true);
+    });
+    test('real probes', () => {
+      expect(fires('/usr/bin/python3', ['python3', '-VV'])).toBe(false);
+      expect(fires('/bin/bash', ['bash', '--version'])).toBe(false);
+      expect(fires('/usr/bin/perl', ['perl', '-v'])).toBe(false);
+    });
+    test('the explanation does not call -h or -V a shell probe', () => {
+      const r = RULES.find(x => x.id === 'shell-from-pipe')!;
+      expect(r.explanation).toMatch(/--version/);
+      expect(r.explanation).toMatch(/python, perl and ruby/);
+    });
+  });
+
+  describe('spctl wording describes the attempt', () => {
+    test('--global-disable and --master-disable', () => {
+      for (const flag of ['--global-disable', '--master-disable']) {
+        const f = find('security-setting-change', '/usr/sbin/spctl', ['spctl', flag])!;
+        expect(f.title).toBe('Tried to turn Gatekeeper off');
+        expect(f.explanation).toMatch(/macOS 15/);
+        expect(f.explanation).toMatch(/Anywhere/);
+        expect(f.severity).toBe('high');
+      }
+    });
+    test('--disable and --add', () => {
+      expect(find('security-setting-change', '/usr/sbin/spctl', ['spctl', '--disable'])!.explanation).toMatch(/macOS 15/);
+      const add = find('security-setting-change', '/usr/sbin/spctl', ['spctl', '--add', '/Applications/X.app'])!;
+      expect(add.title).toBe('Tried to add a Gatekeeper exception');
+      expect(add.explanation).toMatch(/macOS 15/);
+    });
+  });
+
+  describe('more setting changes', () => {
+    test('csrutil disable is high T1562.001, hedged, and not recon', () => {
+      for (const args of [['csrutil', 'disable'], ['csrutil', 'authenticated-root', 'disable']]) {
+        const fs = findingsOf('/usr/bin/csrutil', args);
+        const f = fs.find(x => x.ruleId === 'security-setting-change')!;
+        expect(f.severity, args.join(' ')).toBe('high');
+        expect(f.mitre).toEqual(['T1562.001']);
+        expect(f.explanation).toMatch(/Recovery/);
+        expect(fs.some(x => x.ruleId === 'recon')).toBe(false);
+      }
+      expect(ruleIds('/usr/bin/csrutil', ['csrutil', 'status'])).toEqual(['recon']);
+    });
+    test('security add-trusted-cert is high T1553.004; authorizationdb write is med T1548', () => {
+      const cert = find('security-setting-change', '/usr/bin/security', ['security', 'add-trusted-cert', '-d', '-r', 'trustRoot', '-k', '/Library/Keychains/System.keychain', 'ca.pem'])!;
+      expect(cert.severity).toBe('high');
+      expect(cert.mitre).toEqual(['T1553.004']);
+      expect(cert.explanation).toMatch(/trusted root/);
+      const auth = find('security-setting-change', '/usr/bin/security', ['security', 'authorizationdb', 'write', 'system.preferences', 'allow'])!;
+      expect(auth.severity).toBe('med');
+      expect(auth.mitre).toEqual(['T1548']);
+      expect(find('security-setting-change', '/usr/bin/security', ['security', 'authorizationdb', 'read', 'system.preferences'])).toBeUndefined();
+    });
+    test('clearing DNS servers is not a redirect', () => {
+      expect(find('security-setting-change', '/usr/sbin/networksetup', ['networksetup', '-setdnsservers', 'Wi-Fi', 'Empty'])).toBeUndefined();
+    });
+    test('turning a proxy on is med; off is nothing', () => {
+      for (const flag of ['-setwebproxystate', '-setsecurewebproxystate', '-setautoproxystate', '-setproxyautodiscovery']) {
+        const on = find('security-setting-change', '/usr/sbin/networksetup', ['networksetup', flag, 'Wi-Fi', 'on'])!;
+        expect(on.severity, flag).toBe('med');
+        expect(on.mitre).toEqual(['T1557']);
+        expect(on.explanation).toMatch(/turned a proxy setting on/i);
+        expect(findingsOf('/usr/sbin/networksetup', ['networksetup', flag, 'Wi-Fi', 'off']), flag).toEqual([]);
+      }
+    });
+  });
+
+  describe('keychain tiers without false matches', () => {
+    const kc = (args: string[]) => find('keychain-access', '/usr/bin/security', ['security', ...args]);
+    test('browser account names count only without a service, or with a Safe Storage service', () => {
+      expect(kc(['find-generic-password', '-w', '-s', 'mysvc', '-a', 'Edge'])!.severity).toBe('med');
+      expect(kc(['find-generic-password', '-w', '-a', 'Edge'])!.severity).toBe('high');
+      expect(kc(['find-generic-password', '-w', '-s', 'Microsoft Edge Safe Storage', '-a', 'Microsoft Edge'])!.severity).toBe('high');
+    });
+    test('wallets by whole known names, not substrings', () => {
+      expect(kc(['find-generic-password', '-w', '-s', 'General Ledger Sync'])!.severity).toBe('med');
+      expect(kc(['find-generic-password', '-w', '-s', 'Atomic Mail'])!.severity).toBe('med');
+      for (const name of ['Exodus', 'Electrum', 'MetaMask', 'Ledger Live', 'Atomic Wallet', 'Coinomi'])
+        expect(kc(['find-generic-password', '-w', '-s', name])!.severity, name).toBe('high');
+    });
+  });
+
+  test('persistence temp wording: /tmp is everyone, /var/folders is the user', () => {
+    const ev = (exe: string) => analyze(capture([], [persistenceItem({ itemType: 3, executablePath: exe })])).queue[0]!.findings[0]!.evidence;
+    expect(ev('/tmp/agent')).toMatch(/every user and process can write to/);
+    expect(ev('/var/tmp/agent')).toMatch(/every user and process can write to/);
+    expect(ev('/private/var/folders/ab/cd/T/agent')).toMatch(/per-user temporary folder.*the user \(or anything running as them\)/);
+    expect(ev('/private/var/folders/ab/cd/T/go-build1/b001/x.test')).toMatch(/Go build folder.*the user \(or anything running as them\)/);
+  });
+
+  describe('download edge cases', () => {
+    const curl = (...a: string[]) => ruleIds('/usr/bin/curl', ['curl', ...a]).includes('download');
+    const wget = (...a: string[]) => ruleIds('/usr/local/bin/wget', ['wget', ...a]).includes('download');
+    test('single-label hosts with a port or path are URLs', () => {
+      expect(wget('localhost:8080/x')).toBe(true);
+      expect(wget('localhost/x')).toBe(true);
+      expect(wget('intranet/x')).toBe(true);
+    });
+    test('curl to stdout or stderr devices is not a download', () => {
+      for (const t of ['/dev/stdout', '/dev/stderr', '/dev/fd/1']) expect(curl('-o', t, 'https://e.com/x'), t).toBe(false);
+      expect(wget('-O', '/dev/stdout', 'https://e.com/x')).toBe(false);
+    });
+    test('wget value options do not leave their value as a URL', () => {
+      expect(wget('--ca-certificate', 'ca.pem', '--version')).toBe(false);
+      expect(wget('--private-key', 'k.pem', '--certificate', 'c.pem', '-O', '-', 'https://e.com/x')).toBe(false);
+    });
+  });
+
+  test('a registration\'s plist path matches the written plist case-insensitively', () => {
+    const cat = proc('902:1', [apple('/bin/cat', ['cat'])]);
+    cat.fileOps.push({ kind: 'create', path: '/Users/u/Library/LaunchAgents/Com.Evil.plist', time: 't', seq: 4 });
+    const a = analyze(capture([cat], [persistenceItem({ itemType: 3, plistPath: '/users/u/library/launchagents/com.evil.plist', executablePath: '/bin/sh', creator: '902:1' })]));
+    expect(a.queue[0]!.findings.map(f => f.ruleId)).toEqual(['persistence-item']);
   });
 });

@@ -85,8 +85,69 @@ const NETWORK_REDIRECTS: Record<string, string> = {
   '-setwebproxy': 'web proxy', '-setsecurewebproxy': 'secure web proxy', '-setautoproxyurl': 'automatic proxy URL',
   '-setsocksfirewallproxy': 'SOCKS proxy', '-setdnsservers': 'DNS servers',
 };
+/** csrutil subcommands that change SIP rather than report it. */
+const CSRUTIL_WRITES = ['disable', 'enable', 'clear', 'add', 'remove'];
+/** networksetup switches that turn a proxy on or off: `-setwebproxystate <service> on`. */
+const PROXY_SWITCHES = ['-setwebproxystate', '-setsecurewebproxystate', '-setautoproxystate', '-setproxyautodiscovery', '-setsocksfirewallproxystate'];
 /** networksetup options that change the configuration rather than read it. */
 const NETWORKSETUP_WRITE = /^-(?:set|create|delete|remove|add|order|switch|import|detect)/i;
+
+const MACOS15 = 'From macOS 15, spctl no longer supports changing the rule database or the global state, so there it is only an attempt.';
+
+/** A command that weakens a macOS protection or redirects traffic, with what it tried to do. */
+function settingChange(n: string, a: string[], cmd: string): MatchResult | null {
+  if (n === 'spctl') {
+    const off = a.find(x => SPCTL_DISABLE.includes(x));
+    if (off === '--global-disable' || off === '--master-disable') {
+      return { evidence: cmd, severity: 'high', mitre: ['T1562.001'], title: 'Tried to turn Gatekeeper off',
+        explanation: `Ran \`spctl ${off}\`, which asks macOS to turn Gatekeeper off. On macOS 14 and earlier (as root) this disables it; from macOS 15 it only reveals the "Allow applications from Anywhere" option in Privacy & Security, which someone must still pick.` };
+    }
+    if (off === '--disable') {
+      return { evidence: cmd, severity: 'high', mitre: ['T1562.001'], title: 'Tried to turn Gatekeeper off',
+        explanation: `Ran \`spctl --disable\`, which tries to disable Gatekeeper assessment rules (all of them, or the one named). On older macOS (as root) this stops those checks. ${MACOS15}` };
+    }
+    if (a.includes('--add')) {
+      return { evidence: cmd, severity: 'high', mitre: ['T1553.001'], title: 'Tried to add a Gatekeeper exception',
+        explanation: `Ran \`spctl --add\`, which tries to add a Gatekeeper rule so the named app passes without the usual check. On older macOS (as root) this works. ${MACOS15}` };
+    }
+    return null;
+  }
+  if (n === 'csrutil' && a.includes('disable')) {
+    const root = a.includes('authenticated-root');
+    return { evidence: cmd, severity: 'high', mitre: ['T1562.001'],
+      title: root ? 'Tried to turn off the sealed system volume check' : 'Tried to turn off System Integrity Protection',
+      explanation: `Ran \`${root ? 'csrutil authenticated-root disable' : 'csrutil disable'}\`, which turns off ${root ? 'the check that the system volume is Apple\'s sealed original' : 'System Integrity Protection'}. It only works from Recovery; seeing it on a normal boot means an attempt.` };
+  }
+  if (n === 'security') {
+    const s = securityArgs(a);
+    if (s?.sub === 'add-trusted-cert') {
+      const root = s.rest.includes('trustRoot') || hasShortFlag(s.rest, 'd');
+      return { evidence: cmd, severity: 'high', mitre: ['T1553.004'], title: 'Certificate trusted',
+        explanation: `Ran \`security add-trusted-cert\`, which marks a certificate as trusted${root ? ' (here as a trusted root, or in the admin trust settings for every user)' : ''}. A trusted root lets whoever holds its key intercept HTTPS traffic or sign things the Mac will accept.` };
+    }
+    if (s?.sub === 'authorizationdb' && s.rest[0] === 'write') {
+      return { evidence: cmd, severity: 'med', mitre: ['T1548'], title: 'Authorization rule changed',
+        explanation: 'Ran `security authorizationdb write`, which changes an authorization rule: who may do what, and whether a password is asked for. Malware loosens these rules to get admin rights without asking.' };
+    }
+    return null;
+  }
+  if (n === 'networksetup') {
+    const flag = a.find(x => Object.hasOwn(NETWORK_REDIRECTS, x.toLowerCase()));
+    if (flag !== undefined) {
+      const values = a.slice(a.indexOf(flag) + 2);
+      // `-setdnsservers <service> Empty` clears the list: nothing is redirected.
+      if (flag.toLowerCase() === '-setdnsservers' && values.length > 0 && values.every(v => /^empty$/i.test(v))) return null;
+      return { evidence: cmd, severity: 'med', mitre: ['T1557'], title: 'Web proxy or DNS changed',
+        explanation: `Changed the ${NETWORK_REDIRECTS[flag.toLowerCase()]} with \`networksetup ${flag}\`, which redirects web or DNS traffic through a server someone chose. A common adware trick.` };
+    }
+    const sw = a.find(x => PROXY_SWITCHES.includes(x.toLowerCase()));
+    if (sw !== undefined && a.slice(a.indexOf(sw) + 1).some(v => /^on$/i.test(v))) {
+      return { evidence: cmd, severity: 'med', mitre: ['T1557'], title: 'Proxy setting turned on',
+        explanation: `Turned a proxy setting on with \`networksetup ${sw} … on\`, so web traffic goes through whatever proxy is configured. A common adware trick.` };
+    }
+  }
+  return null;
+}
 
 /** What a recon tool finds out with these arguments, or null when the arguments make it a change, not a read. */
 function reconKind(img: Image): ReconKind | null {
@@ -97,6 +158,7 @@ function reconKind(img: Image): ReconKind | null {
   if (n === 'spctl' && a.some(x => SPCTL_WRITES.includes(x))) return null;
   if (n === 'networksetup' && a.some(x => NETWORKSETUP_WRITE.test(x))) return null;
   if (n === 'sysctl' && (hasShortFlag(a, 'w') || a.some(x => x.includes('=')))) return null;
+  if (n === 'csrutil' && a.some(x => CSRUTIL_WRITES.includes(x))) return null;
   if (n === 'scutil') {
     if (a.includes('--set')) return null;
     if (a.includes('--get')) return 'system';
@@ -108,8 +170,10 @@ function reconKind(img: Image): ReconKind | null {
 // Keychain
 
 /** Browser "Safe Storage" keychain entries (service "Chrome Safe Storage", account "Chrome", …): they decrypt saved logins and cookies. */
-const BROWSER_KEY = /^(?:google )?(?:chrome|chromium|brave|microsoft edge|edge|opera|vivaldi|arc)(?: browser)?(?: safe storage)?$|safe storage/i;
-const WALLET = /exodus|electrum|metamask|ledger|atomic|coinomi/i;
+const SAFE_STORAGE = /safe storage$/i;
+const BROWSER_ACCOUNT = /^(?:google )?(?:chrome|chromium|brave|microsoft edge|edge|opera|vivaldi|arc)(?: browser)?$/i;
+/** Crypto wallet apps, by whole name. */
+const WALLET = /\b(?:exodus|electrum|metamask|ledger live|atomic wallet|coinomi)\b/i;
 
 function keychainFinding(args: string[]): MatchResult | null {
   const s = securityArgs(args);
@@ -122,8 +186,14 @@ function keychainFinding(args: string[]): MatchResult | null {
       return { evidence: '', severity: 'low',
         explanation: `Looked up a keychain item's attributes, not its secret, with \`${cmd}\` (no -g or -w). On its own this is only context.` };
     }
-    const names = [...optValues(o, 's', []), ...optValues(o, 'a', []), ...optValues(o, 'l', [])].filter((v): v is string => !!v);
-    if (names.some(v => BROWSER_KEY.test(v))) {
+    const vals = (letter: string) => optValues(o, letter, []).filter((v): v is string => !!v);
+    const services = vals('s');
+    const names = [...services, ...vals('a'), ...vals('l')];
+    // A browser name as the account counts only when no other service is named: `-s mysvc -a Edge` is someone else's item.
+    const safeService = services.some(v => SAFE_STORAGE.test(v));
+    const browser = safeService || vals('l').some(v => SAFE_STORAGE.test(v))
+      || ((services.length === 0 || safeService) && vals('a').some(v => BROWSER_ACCOUNT.test(v)));
+    if (browser) {
       return { evidence: '', severity: 'high',
         explanation: `Printed a browser's Safe Storage key with \`${cmd}\`. That key decrypts the browser's saved passwords and cookies; stealers grab it first.` };
     }
@@ -184,19 +254,20 @@ const LAUNCH_TITLE: Record<NonNullable<LaunchKind>, string> = {
   agent: 'Launch agent registered', daemon: 'Launch daemon registered', login: 'Login item registered',
   app: 'App registered to open at login', user: 'Login item registered (user item)',
 };
-const ASKS = 'if the plist asks for it (RunAtLoad/KeepAlive)';
-/** What launchd does with an agent or daemon plist in this place: "…starts the program it names …". */
+/** When launchd actually starts the program: whatever the plist asks for. */
+const TRIGGERS = 'and starts the program it names when the plist says: at load (RunAtLoad), to keep it running (KeepAlive), on a schedule (StartInterval, StartCalendarInterval) or when files change (WatchPaths), for example';
+/** Where launchd loads an agent or daemon plist from this place: "…loads it <when> …". */
 function launchdStarts(kind: 'agent' | 'daemon', plistPath: string | null): { scope: string; when: string } {
-  if (kind === 'daemon') return { scope: '', when: `at boot, usually as root, ${ASKS}` };
+  if (kind === 'daemon') return { scope: '', when: 'at boot, usually to run as root,' };
   const n = plistPath !== null ? normPath(plistPath) : '';
-  if (ALL_USERS_AGENT_DIR.test(n)) return { scope: ' for every user', when: `whenever anyone logs in, ${ASKS}` };
-  if (USER_AGENT_DIR.test(n)) return { scope: ' for this user', when: `when the user logs in, ${ASKS}` };
-  return { scope: '', when: `at login, ${ASKS}` };
+  if (ALL_USERS_AGENT_DIR.test(n)) return { scope: ' for every user', when: 'whenever anyone logs in' };
+  if (USER_AGENT_DIR.test(n)) return { scope: ' for this user', when: 'each time this user logs in' };
+  return { scope: '', when: 'at login' };
 }
 function launchExplanation(kind: NonNullable<LaunchKind>, plistPath: string | null): string {
   if (kind === 'agent' || kind === 'daemon') {
     const { scope, when } = launchdStarts(kind, plistPath);
-    return `Registered a launch ${kind}${scope}: launchd starts the program it names ${when}.`;
+    return `Registered a launch ${kind}${scope}: launchd loads it ${when} ${TRIGGERS}.`;
   }
   return {
     login: 'Registered a login item: macOS opens it each time this user logs in.',
@@ -208,14 +279,14 @@ function launchExplanation(kind: NonNullable<LaunchKind>, plistPath: string | nu
 /** Where a launch item's program sits, worded for persistence: why that place makes it worse. */
 const PERSIST_WORDS: Record<LocationKind, string> = {
   translocated: 'inside a translocated app (a quarantined download macOS ran from a random read-only copy)',
-  temp: 'in a temporary folder, which any process can write to',
+  temp: 'in /tmp or /var/tmp, which every user and process can write to',
   shared: 'in /Users/Shared, which every user can write to',
   downloads: 'in the Downloads folder, which the user can write to',
   volume: 'on a mounted disk image or external volume, which can be swapped or disappear',
   hidden: 'in a hidden folder in the home folder, which the user can write to',
   'home-dot': 'in a dot-folder in the home folder, which the user can write to',
   tooling: 'inside a project build or tooling folder in the home folder, which the user can write to',
-  'go-build': 'in a Go build folder in the temporary area, which any process can write to',
+  'go-build': 'in a Go build folder in the per-user temporary area, which the user (or anything running as them) can write to',
 };
 
 const APP_BUNDLE_EXE = /\.app\/Contents\/MacOS\/[^/]+$/i;
@@ -248,7 +319,13 @@ function persistenceSeverity(target: { path: string; isApp: boolean } | null, m:
   if (!target.isApp && INTERPRETER.test(n)) return { severity: 'high', reason: `it runs a script interpreter (${n})` };
   const p = normPath(target.path);
   const where = oddLocation(target.isApp ? `${p}/` : p);
-  if (where !== null) return { severity: 'high', reason: `${what} is ${PERSIST_WORDS[where.kind]}` };
+  if (where !== null) {
+    // /tmp and /var/tmp are world-writable; /var/folders/…/T belongs to one user.
+    const words = where.kind === 'temp' && /^\/var\/folders\//i.test(p)
+      ? 'in the per-user temporary folder (/var/folders/…), which the user (or anything running as them) can write to'
+      : PERSIST_WORDS[where.kind];
+    return { severity: 'high', reason: `${what} is ${words}` };
+  }
   if (HOME_CACHES.test(p)) return { severity: 'high', reason: `${what} is in ~/Library/Caches, which the user can write to` };
   const key = p.toLowerCase();
   const matches = (i: Image) => {
@@ -300,7 +377,7 @@ function ownerName(m: CaptureModel, owner: { id: ProcId } | null, seq: number): 
 }
 
 const PERSISTENCE_EXPLANATION = 'Something registered itself to run automatically at login or boot.';
-const PLIST_GENERIC = `Wrote a launch agent or daemon plist, which launchd runs at login or boot ${ASKS}.`;
+const PLIST_GENERIC = `Wrote a launch agent or daemon plist: launchd loads it at login or boot ${TRIGGERS}.`;
 
 function plistBase(plists: string[]): string {
   const kinds = new Set(plists.map(h => launchKind(null, h)));
@@ -309,7 +386,7 @@ function plistBase(plists: string[]): string {
   if (kind !== 'agent' && kind !== 'daemon') return PLIST_GENERIC;
   const scopes = new Set(plists.map(h => launchdStarts(kind, h).scope));
   const { scope, when } = scopes.size === 1 ? launchdStarts(kind, plists[0]!) : launchdStarts(kind, null);
-  return `Wrote a launch ${kind} plist${scope}: launchd starts the program it names ${when}.`;
+  return `Wrote a launch ${kind} plist${scope}: launchd loads it ${when} ${TRIGGERS}.`;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -379,39 +456,9 @@ export const RULES: Rule[] = [
   },
   {
     id: 'security-setting-change', title: 'Security setting changed', severity: 'high',
-    explanation: 'Turned Gatekeeper off (spctl --master-disable, --global-disable, --disable), added a Gatekeeper exception (spctl --add), or pointed web or DNS traffic at another server (networksetup -setwebproxy, -setsecurewebproxy, -setautoproxyurl, -setsocksfirewallproxy, -setdnsservers).',
-    mitre: ['T1562.001', 'T1553.001', 'T1557'], scope: 'image',
-    match: ({ img }) => {
-      const n = basename(img.path);
-      const a = rest(img);
-      if (n === 'spctl') {
-        const off = a.find(x => SPCTL_DISABLE.includes(x));
-        if (off !== undefined) {
-          return {
-            evidence: cmdline(img), severity: 'high', mitre: ['T1562.001'], title: 'Gatekeeper turned off',
-            explanation: off === '--disable'
-              ? 'Disabled Gatekeeper assessments with `spctl --disable` (all of them, or the rule named), so macOS stops checking those apps before they run.'
-              : `Turned Gatekeeper off with \`spctl ${off}\`, so macOS stops checking downloaded apps before they run.`,
-          };
-        }
-        if (a.includes('--add')) {
-          return {
-            evidence: cmdline(img), severity: 'high', mitre: ['T1553.001'], title: 'Gatekeeper exception added',
-            explanation: 'Added a Gatekeeper exception with `spctl --add`, so the named app or rule passes Gatekeeper without its usual check.',
-          };
-        }
-        return null;
-      }
-      if (n === 'networksetup') {
-        const flag = a.find(x => Object.hasOwn(NETWORK_REDIRECTS, x.toLowerCase()));
-        if (flag === undefined) return null;
-        return {
-          evidence: cmdline(img), severity: 'med', mitre: ['T1557'], title: 'Web proxy or DNS changed',
-          explanation: `Changed the ${NETWORK_REDIRECTS[flag.toLowerCase()]} with \`networksetup ${flag}\`, which redirects web or DNS traffic through a server someone chose. A common adware trick.`,
-        };
-      }
-      return null;
-    },
+    explanation: 'Tried to weaken a macOS protection: turn Gatekeeper off or add an exception (spctl --master-disable, --global-disable, --disable, --add), turn System Integrity Protection off (csrutil disable, csrutil authenticated-root disable), trust a root certificate (security add-trusted-cert), or change an authorization rule (security authorizationdb write); or pointed web or DNS traffic elsewhere (networksetup -setwebproxy, -setsecurewebproxy, -setautoproxyurl, -setsocksfirewallproxy, -setdnsservers, or switching a proxy on).',
+    mitre: ['T1562.001', 'T1553.001', 'T1553.004', 'T1548', 'T1557'], scope: 'image',
+    match: ({ img }) => settingChange(basename(img.path), rest(img), cmdline(img)),
   },
   {
     id: 'dscl-authonly', title: 'Password check with dscl', severity: 'high',
@@ -456,9 +503,10 @@ export const RULES: Rule[] = [
         const target = op.kind === 'create' ? op.path : op.kind === 'rename' ? op.toPath : undefined;
         if (target === undefined) continue;
         const n = normPath(target);
-        if (!LAUNCH_DIR.test(n) || seen.has(n)) continue;
-        seen.add(n);
-        const items = m.persistence.filter(it => it.kind === 'add' && it.plistPath !== null && normPath(it.plistPath) === n);
+        const key = n.toLowerCase();
+        if (!LAUNCH_DIR.test(n) || seen.has(key)) continue;
+        seen.add(key);
+        const items = m.persistence.filter(it => it.kind === 'add' && it.plistPath !== null && normPath(it.plistPath).toLowerCase() === key);
         if (items.length === 0) { unregistered.push(target); continue; }
         const owners = items.map(it => ({ it, owner: persistenceOwner(m, it) }));
         if (owners.some(o => o.owner?.id === p.id)) continue;   // the registration's own finding is on this process
@@ -517,7 +565,7 @@ export const RULES: Rule[] = [
   },
   {
     id: 'shell-from-pipe', title: 'Shell or interpreter reading commands from a pipe', severity: 'med',
-    explanation: "A shell, or python, perl or ruby, ran commands piped into it (the `curl … | bash` pattern), so there's no script file on disk to inspect. Version and help probes (--version, -V, -h, perl/ruby -v) do not count.",
+    explanation: "A shell, or python, perl or ruby, ran commands piped into it (the `curl … | bash` pattern), so there's no script file on disk to inspect. Version and help probes before the script starts do not count: --version and --help, and for python, perl and ruby also -V, -VV, -h (and perl/ruby -v).",
     mitre: ['T1059.004', 'T1059.006', 'T1059'], scope: 'image',
     match: ({ p, img, imgIndex }) => {
       const lang = pipeLang(img);
@@ -556,7 +604,9 @@ export const RULES: Rule[] = [
       const n = basename(img.path);
       if (n !== 'curl' && n !== 'wget') return null;
       const a = rest(img);
-      const isFile = (t: string | undefined): boolean => t !== undefined && t !== '-' && t !== '/dev/null';
+      // `-`, /dev/null, /dev/stdout, /dev/stderr and /dev/fd/N are not files on disk.
+      const isFile = (t: string | undefined): boolean =>
+        t !== undefined && t !== '-' && !/^\/dev\/(?:null|stdout|stderr|fd\/\d+)$/.test(t);
       if (n === 'wget') {
         const o = parseOpts(a, WGET_SPEC);
         // --spider only checks that the URL exists; --version and --help print and exit.
