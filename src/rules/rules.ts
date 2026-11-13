@@ -26,28 +26,60 @@ export const RECON_TOOLS: Set<string> = new Set([
   'airport', 'scutil', 'networksetup', 'security', 'csrutil', 'spctl',
 ]);
 
-/** Temporary, download, removable-media and translocated locations a normal install never runs from. */
-const STRONG_LOCATIONS: RegExp[] = [
-  /^\/tmp\//, /^\/var\/folders\//, /^\/Users\/Shared\//, /^\/Users\/[^/]+\/Downloads\//,
-  /^\/Volumes\//, /\/AppTranslocation\//,
-];
-/** A hidden directory below a visible one under home, e.g. ~/Desktop/.hidden/. */
-const BURIED_HIDDEN = /^\/Users\/[^/]+\/[^/.][^/]*\/(?:[^/]+\/)*\.[^/]+\//;
-/** A dot-directory directly under home (~/.cargo, ~/.nvm, ~/.local): where developer tooling lives. */
-const HOME_DOT_DIR = /^\/Users\/[^/]+\/\.[^/]+\//;
-/** Project tooling directories (hooks, virtualenvs, package installs): weak at any depth. */
-const TOOLING_DIRS = new Set(['.git', '.venv', 'venv', '.tox', '.direnv', '.husky', 'node_modules', '.pnpm-store']);
+/**
+ * Where an odd location is. Strong kinds are places a normal install never runs from: temporary folders, Downloads,
+ * /Users/Shared, mounted volumes, App Translocation, and a hidden folder buried below a visible one under home.
+ * Weak kinds are where developer tools live: a dot-folder directly under home (~/.cargo, ~/.local), or a hidden
+ * folder inside a project tooling or build folder (.git/hooks, node_modules/.bin, .build, .terraform).
+ */
+export type LocationKind = 'translocated' | 'temp' | 'shared' | 'downloads' | 'volume' | 'hidden' | 'home-dot' | 'tooling';
+export interface OddLocation { strength: 'strong' | 'weak'; kind: LocationKind }
 
-export type Location = 'strong' | 'weak' | null;
-export function oddLocation(path: string): Location {
+/** How each kind reads in an explanation ("Ran a program from …") and, shorter, in evidence. */
+export const LOCATION_WORDS: Record<LocationKind, { long: string; short: string }> = {
+  translocated: { long: 'a translocated app (macOS ran a quarantined download from a random read-only copy)', short: 'App Translocation' },
+  temp: { long: 'a temporary folder', short: 'temporary folder' },
+  shared: { long: 'the shared folder /Users/Shared, which every user can write to', short: '/Users/Shared' },
+  downloads: { long: 'the Downloads folder', short: 'Downloads' },
+  volume: { long: 'a mounted disk image or external volume (/Volumes)', short: '/Volumes' },
+  hidden: { long: 'a hidden folder inside a visible one', short: 'hidden folder' },
+  'home-dot': { long: 'a dot-folder in the home folder, where developer tools usually live', short: 'home dot-folder' },
+  tooling: { long: 'a hidden folder inside a project tooling or build folder, where developer tools usually live', short: 'developer tooling folder' },
+};
+
+const STRONG_LOCATIONS: [RegExp, LocationKind][] = [
+  [/\/AppTranslocation\//i, 'translocated'],
+  [/^\/(?:tmp|var\/tmp|var\/folders)\//i, 'temp'],
+  [/^\/Users\/Shared\//i, 'shared'],
+  [/^\/Users\/[^/]+\/Downloads\//i, 'downloads'],
+  [/^\/Volumes\//i, 'volume'],
+];
+const HOME = /^\/Users\/[^/]+\//i;
+/** Project tooling and build folders (hooks, virtualenvs, package installs, build output), compared lower-case. */
+const TOOLING_DIRS = new Set([
+  '.git', '.venv', 'venv', '.tox', '.direnv', '.husky', 'node_modules', '.pnpm-store',
+  '.build', '.terraform', '.next', '.cargo', '.gradle', '.m2', '.cache', '.npm', '.yarn', 'target', 'deriveddata',
+]);
+
+export function oddLocation(path: string): OddLocation | null {
   const p = normPath(path);
-  if (STRONG_LOCATIONS.some(re => re.test(p))) return 'strong';
-  if (p.split('/').slice(0, -1).some(seg => TOOLING_DIRS.has(seg))) return 'weak';
-  if (BURIED_HIDDEN.test(p)) return 'strong';
-  return HOME_DOT_DIR.test(p) ? 'weak' : null;
-}
-export function isUserWritable(path: string): boolean {
-  return oddLocation(path) !== null;
+  for (const [re, kind] of STRONG_LOCATIONS) if (re.test(p)) return { strength: 'strong', kind };
+  const home = HOME.exec(p);
+  if (!home) return null;
+  // Walk the folders below home, top down. A tooling folder only softens hidden folders found below it, so
+  // ~/Desktop/.hidden/node_modules/x is still strong: the buried hidden folder comes first.
+  const dirs = p.slice(home[0].length).split('/').slice(0, -1);
+  let inTooling = false;
+  for (let i = 0; i < dirs.length; i++) {
+    const seg = dirs[i]!;
+    const tooling = TOOLING_DIRS.has(seg.toLowerCase());
+    if (seg.startsWith('.')) {
+      if (i === 0) return { strength: 'weak', kind: 'home-dot' };
+      return inTooling || tooling ? { strength: 'weak', kind: 'tooling' } : { strength: 'strong', kind: 'hidden' };
+    }
+    if (tooling) inTooling = true;
+  }
+  return null;
 }
 
 /** `-x`, or a short-option cluster such as `-cr` containing x; `--long` options never match. */
@@ -131,6 +163,14 @@ function trimSlash(p: string): string {
   return p.length > 1 ? p.replace(/\/+$/, '') : p;
 }
 
+/** "Ran a program from a temporary folder, …": the explanation of an odd-location-exec finding, from what triggered it. */
+function oddLocationExplanation(hits: { what: 'program' | 'script'; where: OddLocation }[]): string {
+  const parts = hits.map(h => `${h.what} from ${LOCATION_WORDS[h.where.kind].long}`);
+  const weakOnly = hits.every(h => h.where.strength === 'weak');
+  return `Ran a ${parts.join(', and a ')}, not from /Applications or a system folder.`
+    + (weakOnly ? ' On its own this is a weak signal.' : ' Malware is commonly run from places like this.');
+}
+
 const PERSISTENCE_EXPLANATION = 'Something registered itself to run automatically at login or boot.';
 
 export const RULES: Rule[] = [
@@ -166,7 +206,7 @@ export const RULES: Rule[] = [
       let high = false;
       if (exe !== null) {
         const n = basename(exe);
-        if (SHELL_NAMES.has(n) || INTERPRETERS.has(n) || isUserWritable(exe)) high = true;
+        if (SHELL_NAMES.has(n) || INTERPRETERS.has(n) || oddLocation(exe) !== null) high = true;
         else {
           const key = normPath(exe);
           for (const p of m.processes.values()) {
@@ -294,35 +334,41 @@ export const RULES: Rule[] = [
         // tar's first arg: `--create`, or a mode cluster such as `czf` / `-czf` (not long options like --exclude).
         || (n === 'tar' && (first === '--create' || /^-?[A-Za-z]*c[A-Za-z]*$/.test(first)));
       if (!hit) return null;
-      const staged = a.some(x => x.startsWith('/') && isUserWritable(x));
+      const staged = a.some(x => x.startsWith('/') && oddLocation(x) !== null);
       return { evidence: cmdline(img), severity: staged ? 'high' : 'med' };
     },
   },
   {
     id: 'odd-location-exec', title: 'Ran from an unusual location', severity: 'med',
-    explanation: 'A program ran from a temporary or downloads location rather than `/Applications` or system paths.',
+    explanation: 'Ran a program or script from a temporary folder, Downloads, /Users/Shared, a mounted volume, a translocated app or a hidden folder, not from /Applications or a system folder.',
     mitre: ['T1204.002'], scope: 'image',
-    // Low results (team-signed, or tooling dot-dirs under home) are gated chain-only by the engine.
+    // Low results (team-signed, or a developer tooling location) are gated chain-only by the engine.
     match: ({ img }) => {
-      const hits: { severity: Severity; evidence: string }[] = [];
+      const hits: { severity: Severity; evidence: string; what: 'program' | 'script'; where: OddLocation }[] = [];
       const where = img.path !== null ? oddLocation(img.path) : null;
       if (where !== null) {
         const adhoc = isAdhoc(img);
         const weak: Severity = isUnsigned(img) ? 'med' : 'low';
         const strong: Severity = isUnsigned(img) || adhoc ? 'high' : img.teamId !== null ? 'low' : 'med';
-        const signing = img.signingId === null ? 'unsigned'
+        const signing = !img.signingId ? 'unsigned'
           : adhoc ? `ad-hoc signed (${img.signingId})`
           : img.teamId !== null ? `signed by team ${img.teamId}` : `signed (${img.signingId})`;
-        hits.push({ severity: where === 'strong' ? strong : weak, evidence: `${img.path}, ${signing}` });
+        hits.push({
+          severity: where.strength === 'strong' ? strong : weak, what: 'program', where,
+          evidence: `${img.path} (${LOCATION_WORDS[where.kind].short}), ${signing}`,
+        });
       }
       // A script has no signature of its own, so its location alone never makes it high.
       const scriptWhere = img.script !== null ? oddLocation(img.script) : null;
       if (scriptWhere !== null) {
-        hits.push({ severity: scriptWhere === 'strong' ? 'med' : 'low', evidence: `script ${img.script}` });
+        hits.push({
+          severity: scriptWhere.strength === 'strong' ? 'med' : 'low', what: 'script', where: scriptWhere,
+          evidence: `script ${img.script} (${LOCATION_WORDS[scriptWhere.kind].short})`,
+        });
       }
       if (hits.length === 0) return null;
       const severity = hits.reduce<Severity>((s, h) => (SEVERITY_RANK[h.severity] > SEVERITY_RANK[s] ? h.severity : s), 'low');
-      return { evidence: hits.map(h => h.evidence).join('; '), severity };
+      return { evidence: hits.map(h => h.evidence).join('; '), severity, explanation: oddLocationExplanation(hits) };
     },
   },
   {

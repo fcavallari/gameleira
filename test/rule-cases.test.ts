@@ -108,3 +108,44 @@ describe('persistence findings attach to app, then instigator, then plist creato
     expect(q.items.some(x => x.item.key === 'i:btm:7710')).toBe(true);
   });
 });
+
+describe('odd-location-exec: build folders, nesting, and explanations from the trigger', () => {
+  const adhoc = (path: string) => analyze(capture([proc('100:1', [img({ path, signingId: 'x', csFlags: 0x2 })])]));
+  const oddFinding = (a: ReturnType<typeof analyze>) =>
+    allFindings(a).find(f => f.ruleId === 'odd-location-exec');
+  test('ad-hoc tools in build folders are context-only', () => {
+    for (const p of ['/Users/u/proj/.build/debug/tool', '/Users/u/infra/.terraform/providers/x/tf-provider',
+      '/Users/u/web/.next/cache/x', '/Users/u/proj/target/.fingerprint/x', '/Users/u/proj/.gradle/x/y']) {
+      const a = adhoc(p);
+      expect(a.queue, p).toHaveLength(0);
+      expect(oddFinding(a)?.severity, p).toBe('low');
+    }
+  });
+  test('a tooling folder under a buried hidden folder stays strong', () =>
+    expect(adhoc('/Users/u/Desktop/.hidden/node_modules/x').queue[0]?.severity).toBe('high'));
+  test('a tooling folder with no hidden folder is not an odd location', () =>
+    expect(oddFinding(adhoc('/Users/u/proj/node_modules/esbuild/bin/esbuild'))).toBeUndefined());
+  test('locations compare case-insensitively', () =>
+    expect(adhoc('/Users/shared/agent').queue[0]?.severity).toBe('high'));
+  test('the explanation names the location', () => {
+    const cases: [string, RegExp][] = [
+      ['/private/tmp/x', /temporary folder/], ['/var/tmp/x', /temporary folder/],
+      ['/Users/u/Downloads/x', /Downloads folder/], ['/Users/Shared/x', /shared folder/],
+      ['/Volumes/Installer/x', /disk image or external volume/],
+      ['/private/var/folders/ab/T/AppTranslocation/1/d/X.app/Contents/MacOS/X', /translocated/],
+      ['/Users/u/Desktop/.hidden/x', /hidden folder/],
+    ];
+    for (const [p, re] of cases) {
+      const f = oddFinding(adhoc(p))!;
+      expect(f.explanation, p).toMatch(re);
+      expect(f.explanation, p).toMatch(/^Ran a program from/);
+    }
+    expect(oddFinding(adhoc('/Users/u/.cargo/bin/x'))!.explanation).toMatch(/developer tools/);
+  });
+  test('a script hit says it was a script', () => {
+    const bash = apple('/bin/bash', ['/bin/bash', '/Users/u/Desktop/.hidden/run.command'], { script: '/Users/u/Desktop/.hidden/run.command' });
+    const f = oddFinding(analyze(capture([proc('100:1', [bash])])))!;
+    expect(f.explanation).toMatch(/^Ran a script from a hidden folder/);
+    expect(f.evidence).toMatch(/hidden folder/);
+  });
+});
