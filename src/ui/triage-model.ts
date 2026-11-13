@@ -20,6 +20,18 @@ export const verdictKey = (q: QueueItem): string => q.procId ?? q.key;
 /** Pressing the verdict a queue item already has takes it back to unreviewed (the note is kept). */
 export const toggleStatus = (current: Status, pressed: 'confirmed' | 'benign'): Status => (current === pressed ? 'unreviewed' : pressed);
 
+/** The Triage shortcuts: the key handler and the legend in the empty detail pane both read this table. */
+export type TriageAction = 'next' | 'prev' | 'confirm' | 'benign' | 'note' | 'tree';
+export const TRIAGE_KEYS: { key: string; also?: string; action: TriageAction; what: string }[] = [
+  { key: 'j', also: 'ArrowDown', action: 'next', what: 'next row' },
+  { key: 'k', also: 'ArrowUp', action: 'prev', what: 'previous row' },
+  { key: 'c', action: 'confirm', what: 'confirm suspicious' },
+  { key: 'b', action: 'benign', what: 'mark benign' },
+  { key: 'n', action: 'note', what: 'write a note' },
+  { key: 't', action: 'tree', what: 'show in the tree' },
+];
+export const triageAction = (key: string): TriageAction | undefined => TRIAGE_KEYS.find(k => k.key === key || k.also === key)?.action;
+
 /** Name shown for a queue item: the process name, or `persistence: <plist>` for a persistence-only item. */
 export function itemName(cap: LoadedCapture, q: QueueItem): string {
   if (q.procId !== null) return displayName(cap.model, q.procId);

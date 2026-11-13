@@ -27,6 +27,12 @@ const indent = (depth: number): number => 8 + Math.min(depth, MAX_INDENT) * 16;
 
 interface RowProps { style?: CSSProperties; onToggle(key: string, open: boolean): void }
 
+/** One hanging line per ancestor level, through the twisty of each ancestor: the roots the row hangs from. */
+function Guides({ depth }: { depth: number }) {
+  const n = Math.min(depth, MAX_INDENT);
+  return <>{Array.from({ length: n }, (_, l) => <span key={l} className="guide" aria-hidden="true" style={{ left: indent(l) + 5 }} />)}</>;
+}
+
 function Twisty({ show, open, onClick }: { show: boolean; open: boolean; onClick?(): void }) {
   return <span className="twisty" aria-hidden="true" onClick={onClick}>{show ? (open ? '▾' : '▸') : ''}</span>;
 }
@@ -45,6 +51,7 @@ function NodeItem({ row, cap, flag, routine, status, selected, onSelect, style, 
       style={{ ...style, paddingLeft: indent(row.depth) }}
       className={`trow${selected ? ' sel' : ''}${routine ? ' routine' : ''}${proc?.ghost ? ' ghost' : ''}`}
       onClick={() => { onSelect(row.id); }}>
+      <Guides depth={row.depth} />
       <Twisty show={row.expandable} open={row.expanded}
         onClick={row.expandable ? () => { onToggle(row.key, !row.expanded); } : undefined} />
       {flag && <span className={`badge sev-${flag.severity}`}>{flag.severity}</span>}
@@ -68,6 +75,7 @@ function GreyItem({ row, text, count, style, onToggle }: RowProps & { row: FoldR
     <div role="treeitem" aria-level={row.depth + 1} aria-selected={false} aria-expanded={row.expanded} tabIndex={0}
       style={{ ...style, paddingLeft: indent(row.depth) }} className="trow fold" onClick={flip}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } }}>
+      <Guides depth={row.depth} />
       <Twisty show open={row.expanded} />
       <span className="tname truncate" title={text}>{text}</span>
       {count && <span className="tpid muted">{count}</span>}
@@ -233,7 +241,7 @@ function TreeInner({ cap, queue: triageQueue }: { cap: LoadedCapture; queue: Que
             </label>
           </div>
         </div>
-        <div ref={scroller} role="tree" aria-label="Process tree" tabIndex={0} className="qscroll tscroll" onKeyDown={onKey}>
+        <div ref={scroller} role="tree" aria-label="Process tree" tabIndex={0} className={`qscroll tscroll roots-${mode}`} onKeyDown={onKey}>
           {vmode === 'virtual' && (
             <div style={{ height: v.getTotalSize(), position: 'relative' }}>
               {v.getVirtualItems().map(vi => renderRow(rows[vi.index]!, rowStyle(vi.start)))}

@@ -3,7 +3,7 @@ import type { LoadedCapture } from '../src/ingest/load';
 import type { Image, Process } from '../src/model/types';
 import type { CaptureStats } from '../src/model/types';
 import { itemPathKind } from '../src/model/util';
-import { captureInfo, itemArgs, rowArgs } from '../src/ui/triage-model';
+import { captureInfo, itemArgs, rowArgs, triageAction, TRIAGE_KEYS } from '../src/ui/triage-model';
 import { procByPid, queued } from './helpers';
 import { realTest } from './real';
 
@@ -75,4 +75,11 @@ test('itemPathKind tells a plist from an app bundle (a login item\'s item URL is
   expect(itemPathKind('/Users/u/some/other/thing')).toBe('other');
   expect(itemPathKind(null)).toBeNull();
   expect(itemPathKind('')).toBeNull();
+});
+
+test('every Triage shortcut in the table resolves to its action, arrows included', () => {
+  for (const k of TRIAGE_KEYS) expect(triageAction(k.key)).toBe(k.action);
+  expect(triageAction('ArrowDown')).toBe('next');
+  expect(triageAction('ArrowUp')).toBe('prev');
+  expect(triageAction('x')).toBeUndefined();
 });
