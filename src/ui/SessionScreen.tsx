@@ -1,4 +1,5 @@
 import { useRef, useState, type DragEvent } from 'react';
+import { handlesSupported, pickCaptureFiles, sourcedFromDrop } from '../session/capture-files';
 import { Mark, Wordmark } from './Brand';
 import { ConfirmedTab, SaveFolderNote, useSaveSession } from './ConfirmedTab';
 import { StoreErrorBanner } from './StoreErrorBanner';
@@ -42,6 +43,22 @@ export function CaptureCommand({ hint = 'Run this, stop it with Ctrl-C, then dro
 
 function FilePicker({ label, primary }: { label: string; primary?: boolean }) {
   const c = useSession();
+  const [error, setError] = useState<string | null>(null);
+  if (handlesSupported()) {
+    const pick = async () => {
+      setError(null);
+      try {
+        const picked = await pickCaptureFiles();
+        if (picked.length > 0) await c.loadFiles(picked.map(p => p.file), picked.map(p => p.handle));
+      } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    };
+    return (
+      <>
+        <button className={primary ? 'primary' : ''} onClick={() => { void pick(); }}>{label}</button>
+        {error && <p role="alert" className="error">{error}</p>}
+      </>
+    );
+  }
   return (
     <label className={`filebtn${primary ? ' primary' : ''}`}>{label}
       <input type="file" multiple onChange={e => { void c.loadFiles([...(e.target.files ?? [])]); e.target.value = ''; }} />
@@ -53,6 +70,30 @@ function FilePicker({ label, primary }: { label: string; primary?: boolean }) {
  * Progress, load errors and the session's captures, shown wherever files are added. The list is left out only when it
  * would repeat the counts above it: one capture, loaded.
  */
+/** Reads the remembered files of every capture again: shown once at least one capture has one. */
+function ReloadAll() {
+  const c = useSession();
+  const known = c.capRecs.filter(r => c.captureFiles.has(r.fingerprint)).length;
+  if (known === 0) return null;
+  return (
+    <button onClick={() => { void c.reloadCaptures(); }} disabled={c.progress !== null}
+      title="Read every capture of this session again from where it was added, picking up anything written to it since. The browser may ask for access to each file.">
+      Reload all captures{known < c.capRecs.length ? ` (${known} of ${c.capRecs.length})` : ''}
+    </button>
+  );
+}
+
+/** A capture that is not loaded: a button to read it again from where it was added, when that is remembered. */
+function ReloadOne({ fingerprint, fileName }: { fingerprint: string; fileName: string }) {
+  const c = useSession();
+  // The active capture, not loaded, has the drop zone's own Reload button.
+  if (!c.captureFiles.has(fingerprint) || (fingerprint === c.active && !c.capture)) return null;
+  return (
+    <button className="link" aria-label={`Reload ${fileName}`} disabled={c.progress !== null}
+      onClick={() => { void c.reloadCaptures([fingerprint]); }}>Reload</button>
+  );
+}
+
 function LoadStatus() {
   const c = useSession();
   const p = c.progress;
@@ -73,7 +114,7 @@ function LoadStatus() {
             <li key={r.fingerprint} className={r.fingerprint === c.active ? 'active' : ''}>
               {c.captures.has(r.fingerprint)
                 ? <span>{r.fileName} · {fmt(r.events)} events · {fmt(r.processes)} processes · {fmt(r.flagged)} flagged</span>
-                : <span className="warn">Re-add {r.fileName} to continue</span>}
+                : <span><span className="warn">Re-add {r.fileName} to continue</span> <ReloadOne fingerprint={r.fingerprint} fileName={r.fileName} /></span>}
             </li>
           ))}
         </ul>
@@ -92,10 +133,19 @@ function DropZone({ over }: { over: boolean }) {
         <div className={`drop-target${over ? ' over' : ''}`}>
           <Mark size={44} />
           <div>
-            <p className="big">{activeRec ? `${activeRec.fileName} is not loaded. Drop its file to continue.` : 'Drop a capture file to begin'}</p>
+            <p className="big">{activeRec
+              ? `${activeRec.fileName} is not loaded. ${c.captureFiles.has(activeRec.fingerprint) ? 'Reload it, or drop its file' : 'Drop its file'} to continue.`
+              : c.capRecs.some(r => c.captureFiles.has(r.fingerprint))
+                ? 'Reload this session’s captures, or drop a capture file'
+                : 'Drop a capture file to begin'}</p>
             <p className="muted">eslogger JSONL, any size. It is read here and never leaves this browser.</p>
           </div>
-          <FilePicker label="Choose capture files" primary />
+          <div className="drop-acts">
+            {activeRec && c.captureFiles.has(activeRec.fingerprint) && (
+              <button className="primary" disabled={c.progress !== null} onClick={() => { void c.reloadCaptures([activeRec.fingerprint]); }}>Reload {activeRec.fileName}</button>
+            )}
+            <FilePicker label="Choose capture files" primary={!(activeRec && c.captureFiles.has(activeRec.fingerprint))} />
+          </div>
         </div>
         <LoadStatus />
       </div>
@@ -164,7 +214,10 @@ export function SessionScreen() {
     end();
     if (!hasFiles(e) || ownDrop(e)) return;
     e.preventDefault();
-    if (takesCaptures) void c.loadFiles([...e.dataTransfer.files]);
+    if (!takesCaptures) return;
+    if (!handlesSupported()) { void c.loadFiles([...e.dataTransfer.files]); return; }
+    // The items are readable only during this event: sourcedFromDrop takes them before its first await.
+    void sourcedFromDrop(e.dataTransfer).then(list => c.loadFiles(list.map(x => x.file), list.map(x => x.handle)));
   };
 
   return (
@@ -194,6 +247,7 @@ export function SessionScreen() {
               </select>
             </label>
           )}
+          <ReloadAll />
           {!bigDrop && <FilePicker label="Add capture files" />}
           {/* The Confirmed tab has the same download as "Export session", next to its options. */}
           {c.view !== 'confirmed' && (
