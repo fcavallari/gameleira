@@ -34,6 +34,36 @@ test('btm add extracts plist path and executable', () => {
   expect(b.map(e => e.btm!.plistPath)).toContain('/Users/alice/Library/LaunchAgents/com.test.studyguide.plist');
   expect(b.find(e => e.btm!.plistPath!.endsWith('studyguide.plist'))!.btm!.executablePath).toBe('/bin/sh');
 });
+test('btm add carries item type, instigator and app with their tokens', () => {
+  const sg = parseAll('es-lab.jsonl').find(e => e.kind === 'btm_add' && e.btm!.plistPath!.endsWith('studyguide.plist'))!;
+  expect(sg.btm).toMatchObject({ itemType: 3, instigatorToken: '558:1379', app: null, appToken: null });
+  expect(sg.btm!.instigator).toMatchObject({ token: '558:1379', pid: 558, path: '/usr/libexec/smd' });
+});
+test('btm add with missing or malformed instigator, app and item still parses', () => {
+  const mk = (body: object) => parseLine(JSON.stringify({
+    version: 11, time: 't', global_seq_num: 1,
+    process: { audit_token: { pid: 1, pidversion: 2 } }, event: { btm_launch_item_add: body },
+  }));
+  const cases: object[] = [
+    {},
+    { item: null, instigator: null, instigator_token: null, app: null, app_token: null },
+    { item: { item_type: 'x' }, instigator: {}, instigator_token: {}, app: 5, app_token: { pid: 'a' } },
+  ];
+  for (const body of cases) {
+    const ev = mk(body);
+    expect(ev).not.toBe('bad');
+    expect((ev as NormEvent).btm).toEqual({
+      plistPath: null, executablePath: null, appPath: null, itemType: null,
+      instigator: null, instigatorToken: null, app: null, appToken: null,
+    });
+  }
+  // Token only: the process object is gone, the token remains.
+  const tokOnly = mk({ instigator: null, instigator_token: { pid: 9, pidversion: 4 }, app: null, app_token: { pid: 8, pidversion: 3 } });
+  expect((tokOnly as NormEvent).btm).toMatchObject({ instigator: null, instigatorToken: '9:4', app: null, appToken: '8:3' });
+  // Object only: the token comes from its audit_token.
+  const objOnly = mk({ app: { audit_token: { pid: 8, pidversion: 3 }, executable: { path: '/Applications/A.app/Contents/MacOS/A' } } });
+  expect((objOnly as NormEvent).btm).toMatchObject({ appToken: '8:3', app: { token: '8:3', path: '/Applications/A.app/Contents/MacOS/A' } });
+});
 test('v6 parses', () => {
   const evs = parseAll('atomic_stealer.json');
   expect(evs.length).toBe(556);

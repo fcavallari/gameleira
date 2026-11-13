@@ -139,10 +139,14 @@ export class ModelBuilder {
       }
       case 'btm_add': case 'btm_remove': {
         const b = ev.btm!;
+        // The embedded instigator and app are process objects like any other: register them.
+        if (b.instigator) this.ensure(b.instigator, ev.seq, ev.time);
+        if (b.app) this.ensure(b.app, ev.seq, ev.time);
         this.persistence.push({
           id: 'btm:' + ev.seq, kind: ev.kind === 'btm_add' ? 'add' : 'remove',
           plistPath: b.plistPath, executablePath: b.executablePath, appPath: b.appPath,
-          time: ev.time, seq: ev.seq, instigator: p.id, creator: null,
+          time: ev.time, seq: ev.seq, itemType: b.itemType, emitter: p.id,
+          instigatorToken: b.instigatorToken, appToken: b.appToken, instigator: null, app: null, creator: null,
         });
         break;
       }

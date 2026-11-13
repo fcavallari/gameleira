@@ -3,6 +3,9 @@ import { basename, latestImage, normPath } from './util';
 
 export type ParentMode = 'original' | 'current' | 'responsible';
 
+/** Whoever holds a reference: a process, or a persistence item (its id and seq, no start time). */
+type Ref = Pick<Process, 'id' | 'firstSeq' | 'startTime'>;
+
 function ghost(id: ProcId, pid: number, firstSeq: number): Process {
   return {
     id, pid, ghost: true, images: [],
@@ -22,20 +25,21 @@ function tokenPidversion(token: TokenKey): number {
 }
 
 /** start_time in ms; NaN when absent or unparseable. */
-function startMs(p: Process): number {
+function startMs(p: Ref): number {
   return p.startTime === null ? NaN : Date.parse(p.startTime);
 }
 
 /** False when cand started after child, so it cannot be child's parent (PID reuse). Unknown times pass;
  *  pid 1 always passes, since launchd's start_time can be later than its children's (v6 captures). */
-function couldPrecede(cand: Process, child: Process): boolean {
+function couldPrecede(cand: Process, child: Ref): boolean {
   if (cand.pid === 1) return true;
   const c = startMs(cand), k = startMs(child);
   return Number.isNaN(c) || Number.isNaN(k) || c <= k;
 }
 
 /** Fills originalParent, currentParent and responsible on every process, creating ghosts
- *  for pre-capture references, then attributes each persistence item to the plist's creator. */
+ *  for pre-capture references; resolves each persistence item's instigator and app tokens and
+ *  attributes it to the plist's creator. */
 export function resolveRelations(m: CaptureModel): void {
   const procs = [...m.processes.values()].filter(p => !p.ghost);
   const byPid = new Map<number, Process[]>();
@@ -63,10 +67,10 @@ export function resolveRelations(m: CaptureModel): void {
   };
 
   /** The latest captured holder of pid seen by child's first event that did not start after child. */
-  const pidHolder = (pid: number, child: Process): Process | undefined =>
+  const pidHolder = (pid: number, child: Ref): Process | undefined =>
     latestAtOrBefore(byPid.get(pid)?.filter(p => couldPrecede(p, child)), child.firstSeq);
 
-  const adopt = (g: Process, child: Process): ProcId => {
+  const adopt = (g: Process, child: Ref): ProcId => {
     if (child.firstSeq < g.firstSeq) g.firstSeq = child.firstSeq;
     return g.id;
   };
@@ -74,7 +78,7 @@ export function resolveRelations(m: CaptureModel): void {
   /** The captured process an unregistered token belongs to: one inside its exec chain, or
    *  pre-capture history of a process that started before the capture. Not a PID-reuse predecessor,
    *  nor a process that started after child. */
-  const owner = (token: TokenKey, pid: number, child: Process): Process | undefined => {
+  const owner = (token: TokenKey, pid: number, child: Ref): Process | undefined => {
     const cand = pidHolder(pid, child);
     const r = cand && pvRange.get(cand.id);
     if (!cand || !r) return undefined;
@@ -84,7 +88,7 @@ export function resolveRelations(m: CaptureModel): void {
     return undefined;
   };
 
-  const byToken = (token: TokenKey | null, child: Process): ProcId | null => {
+  const byToken = (token: TokenKey | null, child: Ref): ProcId | null => {
     if (token === null) return null;
     const pid = tokenPid(token);
     if (!Number.isFinite(pid) || pid === 0) return null;
@@ -138,6 +142,11 @@ export function resolveRelations(m: CaptureModel): void {
   for (const p of procs) {
     viaToken.set(p.id, byToken(p.parentToken, p));
     p.responsible = byToken(p.responsibleToken, p);
+  }
+  for (const item of m.persistence) {
+    const ref: Ref = { id: item.id, firstSeq: item.seq, startTime: null };
+    item.instigator = byToken(item.instigatorToken, ref);
+    item.app = byToken(item.appToken, ref);
   }
 
   // Pass B: original and current parents, with by-pid fallbacks.

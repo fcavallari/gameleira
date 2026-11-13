@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
 import { buildModel } from '../src/model/builder';
+import { displayName } from '../src/model/relations';
 import { imagePaths, model, procByPid } from './helpers';
 import { readLines } from './fixtures';
 
@@ -122,7 +123,7 @@ test('btm, other events and line stats', () => {
   expect(m6.persistence).toHaveLength(1);
   expect(m6.persistence[0]).toMatchObject({
     id: 'btm:1', kind: 'add', plistPath: '/Users/u/Library/LaunchAgents/x.plist',
-    executablePath: '/bin/sh', instigator: '600:1', creator: null, seq: 1,
+    executablePath: '/bin/sh', emitter: '600:1', instigator: null, app: null, itemType: null, creator: null, seq: 1,
   });
   expect(m6.stats).toMatchObject({
     lines: 4, events: 2, badLines: 1, otherEvents: { mmap: 1 }, versions: [11], firstSeq: 1,
@@ -135,6 +136,48 @@ test('events named after Object.prototype keys are counted as other', () => {
   expect(m9.stats.events).toBe(4);
   expect(m9.stats.otherEvents).toEqual({ constructor: 2, toString: 1, ['__proto__']: 1 });
   expect(Object.getPrototypeOf(m9.stats.otherEvents)).toBe(Object.prototype);
+});
+test('es-lab studyguide btm item: agent type, emitted by backgroundtaskmanagementd, instigated by smd', () => {
+  const item = m.persistence.find(p => p.plistPath?.endsWith('/Library/LaunchAgents/com.test.studyguide.plist'))!;
+  expect(item.itemType).toBe(3);
+  expect(displayName(m, item.emitter)).toBe('backgroundtaskmanagementd');
+  expect(item.instigator).not.toBeNull();
+  const smd = m.processes.get(item.instigator!)!;
+  expect(smd.ghost).toBe(false);
+  expect(smd.pid).toBe(558);
+  expect(displayName(m, smd.id)).toBe('smd');
+  expect(item.app).toBeNull();
+});
+test('login item registered by an app resolves app and instigator through their tokens', () => {
+  const BTM = '/System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Versions/A/Resources/backgroundtaskmanagementd';
+  const EVIL = '/Applications/Evil.app/Contents/MacOS/Evil';
+  const m10 = buildModel([
+    forkLine(1, '1:1', '900:1'),
+    execLine(2, '900:1', '900:2', EVIL),
+    ev(3, proc('750:1', { path: BTM }), { btm_launch_item_add: {
+      item: { item_type: 2, item_url: 'file:///Applications/Evil.app/', app_url: 'file:///Applications/Evil.app/' },
+      executable_path: EVIL,
+      instigator: proc('558:1', { path: '/usr/libexec/smd' }), instigator_token: tok('558:1'),
+      app: null, app_token: tok('900:2'),    // exec'd image token, no process object
+    } }),
+    ev(4, proc('750:1'), { btm_launch_item_add: {
+      item: { item_type: 2 }, instigator: null, instigator_token: tok('777:5'), app: null, app_token: null,
+    } }),
+    ev(5, proc('300:1', { path: '/bin/sleep', ppid: 777 }), { exit: {} }),
+    ev(6, proc('750:1'), { btm_launch_item_add: { item: { item_type: 4 }, instigator_token: tok('750:1') } }),
+  ]);
+  expect(m10.stats.badLines).toBe(0);
+  const [a, b] = m10.persistence;
+  expect(a).toMatchObject({ itemType: 2, emitter: '750:1', app: '900:1', creator: null });
+  expect(displayName(m10, a!.instigator!)).toBe('smd');
+  expect(m10.processes.get(a!.instigator!)!.ghost).toBe(false);
+  // Token only and never captured: a ghost, shared with a pid reference to the same pid.
+  expect(b).toMatchObject({ itemType: 2, app: null, instigator: '777:5' });
+  expect(m10.processes.get('777:5')!.ghost).toBe(true);
+  expect(m10.processes.get('300:1')!.currentParent).toBe('777:5');
+  expect([...m10.processes.values()].filter(p => p.pid === 777)).toHaveLength(1);
+  // An instigator that is the emitting process resolves to it, not to null.
+  expect(m10.persistence[2]).toMatchObject({ itemType: 4, emitter: '750:1', instigator: '750:1' });
 });
 test('new token with same pid and start_time as a live process is a missed exec', () => {
   const T = '2026-01-01T00:00:00.5Z';

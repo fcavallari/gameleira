@@ -10,7 +10,10 @@ export interface ProcInfo {               // normalized es process object
 }
 export type EventKind = 'fork' | 'exec' | 'exit' | 'create' | 'rename' | 'unlink'
   | 'write' | 'setextattr' | 'btm_add' | 'btm_remove' | 'other';
-export interface BtmInfo { plistPath: string | null; executablePath: string | null; appPath: string | null }
+export interface BtmInfo { plistPath: string | null; executablePath: string | null; appPath: string | null;
+  itemType: number | null;                                  // es_btm_item_type_t: 0 user item, 1 app, 2 login item, 3 agent, 4 daemon
+  instigator: ProcInfo | null; instigatorToken: TokenKey | null;   // the XPC caller that asked for the item
+  app: ProcInfo | null; appToken: TokenKey | null }                // the app process that registered it
 export interface NormEvent {
   seq: number; time: string; kind: EventKind; rawType: string; version: number;
   proc: ProcInfo;
@@ -40,7 +43,11 @@ export interface Process {
 }
 export interface PersistenceItem { id: string; kind: 'add' | 'remove'; plistPath: string | null;
   executablePath: string | null; appPath: string | null; time: string; seq: number;
-  instigator: ProcId; creator: ProcId | null }
+  itemType: number | null;                                  // see BtmInfo.itemType
+  emitter: ProcId;                                          // the process that emitted the event (smd, backgroundtaskmanagementd)
+  instigatorToken: TokenKey | null; appToken: TokenKey | null;   // raw
+  instigator: ProcId | null; app: ProcId | null;            // resolved in resolveRelations
+  creator: ProcId | null }                                  // the plist's writer, resolved in resolveRelations
 export interface CaptureStats { lines: number; events: number; badLines: number;
   otherEvents: Record<string, number>; versions: number[];
   firstSeq: number | null; firstTime: string | null; lastTime: string | null }

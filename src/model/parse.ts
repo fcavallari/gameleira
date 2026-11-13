@@ -47,11 +47,29 @@ function destPath(d: Json): string | undefined {
   return undefined;
 }
 
+/** An optional embedded process object; null when absent or without a usable audit_token. */
+function optProcInfo(p: Json): ProcInfo | null {
+  if (!p || typeof p !== 'object') return null;
+  try {
+    return procInfo(p);
+  } catch {
+    return null;
+  }
+}
+
 function btmInfo(e: Json): BtmInfo {
+  const instigator = optProcInfo(e.instigator);
+  const app = optProcInfo(e.app);
+  const itemType = e.item?.item_type;
   return {
     plistPath: fileUrlToPath(e.item?.item_url ?? null),
     executablePath: e.executable_path ?? null,
     appPath: fileUrlToPath(e.item?.app_url ?? null),
+    itemType: typeof itemType === 'number' ? itemType : null,
+    instigator,
+    instigatorToken: tokenOf(e.instigator_token) ?? instigator?.token ?? null,
+    app,
+    appToken: tokenOf(e.app_token) ?? app?.token ?? null,
   };
 }
 

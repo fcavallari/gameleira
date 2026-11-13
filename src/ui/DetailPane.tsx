@@ -257,14 +257,14 @@ function Actions({ vkey, p, noteRef }: { vkey: string; p: Process | null; noteRe
 
 function PersistenceDetail({ cap, q, noteRef }: { cap: LoadedCapture; q: QueueItem; noteRef: RefObject<HTMLTextAreaElement | null> }) {
   const item = cap.model.persistence.find(i => i.id === q.persistenceId);
-  const instigatorId = item ? (cap.model.processes.has(item.instigator) ? item.instigator : cap.model.tokenIndex.get(item.instigator)) : undefined;
+  const emitterId = item && cap.model.processes.has(item.emitter) ? item.emitter : undefined;
   const rows: [string, ReactNode][] = [];
   if (item) {
     rows.push(['Plist', <code className="mono wrap">{item.plistPath ?? 'unknown'}</code>]);
     rows.push(['Runs', <code className="mono wrap">{item.executablePath ?? 'unknown'}</code>]);
     if (item.appPath) rows.push(['App', <code className="mono wrap">{item.appPath}</code>]);
     rows.push(['Time', <span className="mono">{fmtTime(item.time)}</span>]);
-    if (instigatorId) rows.push(['Registered by', displayName(cap.model, instigatorId)]);
+    if (emitterId) rows.push(['Registered by', displayName(cap.model, emitterId)]);
   }
   return (
     <>
