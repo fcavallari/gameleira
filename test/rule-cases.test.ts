@@ -149,3 +149,44 @@ describe('odd-location-exec: build folders, nesting, and explanations from the t
     expect(f.evidence).toMatch(/hidden folder/);
   });
 });
+
+describe('persistence-item severity says why', () => {
+  const sevOf = (exe: string, images: ReturnType<typeof img>[] = []) => {
+    const procs = images.map((i, n) => proc(`${500 + n}:1`, [i]));
+    const f = analyze(capture(procs, [persistenceItem({ itemType: 3, plistPath: '/Users/u/Library/LaunchAgents/x.plist', executablePath: exe })]))
+      .queue.flatMap(q => q.findings).find(x => x.ruleId === 'persistence-item')!;
+    return { severity: f.severity, evidence: f.evidence };
+  };
+  test('a loose program in the home folder is high, even unseen', () => {
+    const r = sevOf('/Users/u/Library/Application Support/com.apple.updates/agent');
+    expect(r.severity).toBe('high');
+    expect(r.evidence).toMatch(/high: .*home folder/);
+  });
+  test('ad-hoc counts as unsigned', () => {
+    const exe = '/Users/u/Applications/Tool.app/Contents/MacOS/Tool';
+    const r = sevOf(exe, [img({ path: exe, signingId: 'tool', csFlags: 0x2 })]);
+    expect(r.severity).toBe('high');
+    expect(r.evidence).toMatch(/high: the program ran ad-hoc signed in this capture/);
+  });
+  test('temp, shared, caches and interpreter paths are high, case-insensitively', () => {
+    for (const exe of ['/users/shared/agent', '/Users/Shared/agent', '/var/tmp/agent', '/private/var/tmp/agent',
+      '/Users/u/Library/Caches/x/agent', '/usr/bin/python', '/usr/bin/python3', '/usr/bin/perl5.30', '/bin/zsh'])
+      expect(sevOf(exe).severity, exe).toBe('high');
+  });
+  test('an app bundle in the home folder whose signature was not seen stays med, and says so', () => {
+    const r = sevOf('/Users/u/Library/Application Support/Google/GoogleUpdater/Current/GoogleUpdater.app/Contents/MacOS/GoogleUpdater');
+    expect(r.severity).toBe('med');
+    expect(r.evidence).toMatch(/med: .*signature was not seen in this capture/);
+  });
+  test('a team-signed app outside user-writable folders is med', () => {
+    const exe = '/Applications/X.app/Contents/MacOS/X';
+    const r = sevOf(exe, [img({ path: exe, signingId: 'x', teamId: 'ABCDE12345' })]);
+    expect(r.severity).toBe('med');
+    expect(r.evidence).toMatch(/med: /);
+  });
+  test('es-lab: studyguide high for its shell, GoogleUpdater med', () => {
+    const q = queued('es-lab.jsonl');
+    expect(q.items.find(x => x.p?.pid === 41865)!.item.findings.find(f => f.ruleId === 'persistence-item')!.evidence).toMatch(/high: it runs a shell \(sh\)/);
+    expect(q.items.find(x => x.item.key === 'i:btm:7710')!.item.severity).toBe('med');
+  });
+});

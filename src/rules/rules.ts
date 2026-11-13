@@ -19,7 +19,8 @@ export const SHELLS: Set<string> = new Set([
   '/bin/sh', '/bin/bash', '/bin/zsh', '/bin/dash', '/bin/ksh', '/bin/csh', '/bin/tcsh',
 ]);
 const SHELL_NAMES = new Set([...SHELLS].map(basename));
-const INTERPRETERS = new Set(['python3', 'osascript', 'perl', 'ruby']);
+/** Script interpreters, versioned names included (python3.11, perl5.30). */
+const INTERPRETER = /^(?:python[0-9.]*|perl[0-9.]*|ruby[0-9.]*|osascript|node|php)$/;
 
 export const RECON_TOOLS: Set<string> = new Set([
   'system_profiler', 'sw_vers', 'whoami', 'id', 'hostname', 'sysctl', 'ioreg', 'uname', 'ps',
@@ -171,6 +172,37 @@ function oddLocationExplanation(hits: { what: 'program' | 'script'; where: OddLo
     + (weakOnly ? ' On its own this is a weak signal.' : ' Malware is commonly run from places like this.');
 }
 
+const APP_BUNDLE_EXE = /\.app\/Contents\/MacOS\/[^/]+$/i;
+const HOME_CACHES = /^\/Users\/[^/]+\/Library\/Caches\//i;
+
+/**
+ * How bad a launch item is, from the program it runs. High when it runs a shell or interpreter, sits anywhere a
+ * user process can write (temporary folders, /Users/Shared, Downloads, ~/Library/Caches, hidden folders, or a loose
+ * program anywhere in a home folder), or ran unsigned or ad-hoc signed in this capture. An app bundle in a home folder
+ * whose signature was not seen (a per-user updater such as GoogleUpdater) stays med, as does everything else.
+ */
+function persistenceSeverity(exe: string | null, m: CaptureModel): { severity: Severity; reason: string } {
+  if (exe === null) return { severity: 'med', reason: 'the event names no program' };
+  const n = basename(exe);
+  if (SHELL_NAMES.has(n)) return { severity: 'high', reason: `it runs a shell (${n})` };
+  if (INTERPRETER.test(n)) return { severity: 'high', reason: `it runs a script interpreter (${n})` };
+  const p = normPath(exe);
+  const where = oddLocation(p);
+  if (where !== null) return { severity: 'high', reason: `the program is in ${LOCATION_WORDS[where.kind].long}` };
+  if (HOME_CACHES.test(p)) return { severity: 'high', reason: 'the program is in ~/Library/Caches, which the user can write to' };
+  const key = p.toLowerCase();
+  const seen = [...m.processes.values()].flatMap(q => q.images).filter(i => i.path !== null && normPath(i.path).toLowerCase() === key);
+  const bad = seen.find(i => isUnsigned(i) || (!i.isPlatform && isAdhoc(i)));
+  if (bad) return { severity: 'high', reason: `the program ran ${isUnsigned(bad) ? 'unsigned' : 'ad-hoc signed'} in this capture` };
+  if (HOME.test(p)) {
+    if (!APP_BUNDLE_EXE.test(p)) return { severity: 'high', reason: 'a loose program in a home folder, which the user (or anything running as them) can overwrite' };
+    const team = seen.find(i => i.teamId !== null)?.teamId;
+    return { severity: 'med', reason: team ? `an app bundle in a home folder, signed by team ${team}`
+      : 'an app bundle in a home folder; its signature was not seen in this capture' };
+  }
+  return { severity: 'med', reason: 'the program is outside temporary and user-writable folders' };
+}
+
 const PERSISTENCE_EXPLANATION = 'Something registered itself to run automatically at login or boot.';
 
 export const RULES: Rule[] = [
@@ -203,20 +235,10 @@ export const RULES: Rule[] = [
         exe !== null ? `runs ${exe}` : null,
         app !== null ? `app ${app}` : null,
       ].filter(Boolean).join('; ') || 'launch item with no paths';
-      let high = false;
-      if (exe !== null) {
-        const n = basename(exe);
-        if (SHELL_NAMES.has(n) || INTERPRETERS.has(n) || oddLocation(exe) !== null) high = true;
-        else {
-          const key = normPath(exe);
-          for (const p of m.processes.values()) {
-            if (p.images.some(i => i.path !== null && normPath(i.path) === key && i.signingId === null)) { high = true; break; }
-          }
-        }
-      }
+      const { severity, reason } = persistenceSeverity(exe, m);
       const kind = launchKind(item.itemType, item.plistPath);
       return {
-        evidence, severity: high ? 'high' : 'med', mitre: launchMitre(kind),
+        evidence: `${evidence}; ${severity}: ${reason}`, severity, mitre: launchMitre(kind),
         ...(kind !== null ? { title: LAUNCH_TITLE[kind], explanation: LAUNCH_EXPLANATION[kind] } : {}),
       };
     },
