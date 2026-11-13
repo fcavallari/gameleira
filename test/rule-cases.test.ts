@@ -391,7 +391,7 @@ describe('smaller rule gaps', () => {
   });
 
   test('dscl . authonly (no dash) is a password check', () =>
-    expect(has('dscl-authonly', '/usr/bin/dscl', ['dscl', '.', 'authonly', 'sandy', 'pw'])).toBe(true));
+    expect(has('dscl-authonly', '/usr/bin/dscl', ['dscl', '.', 'authonly', 'labuser', 'pw'])).toBe(true));
 
   describe('archive-staging', () => {
     const arch = (args: string[], o: Parameters<typeof apple>[2] = {}) =>

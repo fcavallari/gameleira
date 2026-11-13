@@ -257,7 +257,7 @@ test('the export says it carries command lines (which can hold secrets), and "Re
   const s = await store.createSession('lab');
   await store.upsertCapture({ sessionId: s.id, fingerprint: 'fpA', fileName: 'monday.jsonl', size: 1, events: 1, processes: 1, flagged: 0, added: 't' });
   const v = seedVerdict(s.id, 'fpA', 'p1', 'confirmed', 'x');
-  await store.setVerdict({ ...v, snapshot: { ...v.snapshot, args: ['dscl', '.', '-authonly', 'sandy', 'hunter2'] } });
+  await store.setVerdict({ ...v, snapshot: { ...v.snapshot, args: ['dscl', '.', '-authonly', 'labuser', 'hunter2'] } });
   render(<App />);
   await user.click(await screen.findByRole('button', { name: 'lab' }));
   await user.click(await screen.findByRole('tab', { name: 'Confirmed' }));

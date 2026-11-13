@@ -31,8 +31,9 @@ realTest("atomic's dscl row shows dscl's own arguments, not the sh -c wrapper's"
   const p = [...m.processes.values()].find(x => x.images.some(i => i.args?.includes('-authonly')))!;
   expect(p.images.map(i => i.path?.split('/').pop())).toEqual(['Application.app', 'sh', 'bash', 'dscl']);
   const q = a.queue.find(x => x.procId === p.id)!;
-  expect(itemArgs({ model: m } as LoadedCapture, q)).toBe('/Local/Default -authonly sandy sandybachs');
-  expect(rowArgs(p)).toBe('/Local/Default -authonly sandy sandybachs');
+  const dscl = /^\/Local\/Default -authonly \S+ \S+$/;   // the sample's own account and password
+  expect(itemArgs({ model: m } as LoadedCapture, q)).toMatch(dscl);
+  expect(rowArgs(p)).toMatch(dscl);
 });
 
 test('the latest image has no args (exec not seen): earlier args are prefixed with that image\'s program', () => {
