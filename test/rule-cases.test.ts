@@ -82,5 +82,29 @@ describe('persistence chip and title follow the item type', () => {
   });
 });
 
-// keep `img` referenced for later suites
-void img;
+describe('persistence findings attach to app, then instigator, then plist creator', () => {
+  const smd = proc('558:1', [apple('/usr/libexec/smd', [])]);
+  const btmd = proc('750:1', [apple('/System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Versions/A/Resources/backgroundtaskmanagementd', [])]);
+  const evil = proc('900:1', [img({ path: '/Applications/Evil.app/Contents/MacOS/Evil', signingId: 'evil', teamId: 'ABCDE12345' })]);
+  const helper = proc('901:1', [img({ path: '/Applications/Evil.app/Contents/MacOS/Helper', signingId: 'helper', teamId: 'ABCDE12345' })]);
+  const cat = proc('902:1', [apple('/bin/cat', ['cat'])]);
+  const ghost = proc('903:1', [], { ghost: true });
+  const where = (o: Parameters<typeof persistenceItem>[0]) => {
+    const a = analyze(capture([smd, btmd, evil, helper, cat, ghost], [persistenceItem({ itemType: 2, appPath: '/Applications/Evil.app/', ...o })]));
+    const q = a.queue.find(x => x.findings.some(f => f.ruleId === 'persistence-item'))!;
+    return q.procId ?? q.key;
+  };
+  test('the registering app', () => expect(where({ app: '900:1', instigator: '901:1', creator: '902:1' })).toBe('900:1'));
+  test('the instigator when there is no app', () => expect(where({ instigator: '901:1', creator: '902:1' })).toBe('901:1'));
+  test('never the system smd or backgroundtaskmanagementd: the plist creator instead', () => {
+    expect(where({ instigator: '558:1', creator: '902:1' })).toBe('902:1');
+    expect(where({ app: '750:1', instigator: '558:1', creator: '902:1' })).toBe('902:1');
+  });
+  test('a ghost or pathless app or instigator is skipped', () => expect(where({ app: '903:1', instigator: '903:1', creator: '902:1' })).toBe('902:1'));
+  test('standalone when nothing usable is captured', () => expect(where({ instigator: '558:1' })).toBe('i:btm:9'));
+  test('es-lab: studyguide stays on cat, GoogleUpdater stays standalone (both instigated by smd)', () => {
+    const q = queued('es-lab.jsonl');
+    expect(q.items.find(x => x.p?.pid === 41865)!.item.findings.map(f => f.ruleId)).toContain('persistence-item');
+    expect(q.items.some(x => x.item.key === 'i:btm:7710')).toBe(true);
+  });
+});

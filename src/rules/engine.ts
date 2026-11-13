@@ -1,6 +1,6 @@
 import { ancestry } from '../model/relations';
-import type { CaptureModel, ProcId } from '../model/types';
-import { basename } from '../model/util';
+import type { CaptureModel, PersistenceItem, ProcId } from '../model/types';
+import { basename, imageAt } from '../model/util';
 import { RULES, SEVERITY_RANK as RANK, type MatchResult, type Rule, type Severity } from './rules';
 
 export interface Finding { ruleId: string; severity: Severity; title: string; explanation: string;
@@ -46,6 +46,26 @@ function finding(rule: Rule, res: MatchResult, imgIndex: number | null, persiste
   };
 }
 
+/** Apple's own system daemons (smd, backgroundtaskmanagementd) instigate most launch item registrations. */
+const SYSTEM_DIRS = /^\/(?:System|usr\/libexec|usr\/sbin)\//;
+
+/**
+ * The process a persistence finding attaches to: the app that registered the item, else the instigator (the XPC
+ * caller), else the plist's creator; null means a standalone row. An app or instigator counts only when it is a
+ * captured process with a known path and is not an Apple platform binary under /System, /usr/libexec or /usr/sbin:
+ * pinning a finding on smd would point at the messenger, and a pathless ghost cannot be told apart from it.
+ */
+function persistenceOwner(m: CaptureModel, item: PersistenceItem): ProcId | null {
+  for (const id of [item.app, item.instigator]) {
+    const p = id !== null ? m.processes.get(id) : undefined;
+    const img = p && !p.ghost ? imageAt(p, item.seq) : undefined;
+    if (!img || img.path === null) continue;
+    if (img.isPlatform && SYSTEM_DIRS.test(img.path)) continue;
+    return p!.id;
+  }
+  return item.creator !== null && m.processes.has(item.creator) ? item.creator : null;
+}
+
 export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
   const imageRules = rules.filter(r => r.scope === 'image');
   const itemRules = rules.filter(r => r.scope === 'persistence');
@@ -74,8 +94,9 @@ export function analyze(m: CaptureModel, rules: Rule[] = RULES): Analysis {
       if (res) own.push({ f: finding(rule, res, null, item.id), seq: item.seq, time: item.time });
     }
     if (own.length === 0) continue;
-    if (item.creator !== null && m.processes.has(item.creator)) {
-      for (const h of own) add(item.creator, h);
+    const owner = persistenceOwner(m, item);
+    if (owner !== null) {
+      for (const h of own) add(owner, h);
     } else {
       queue.push({
         key: `i:${item.id}`, kind: 'persistence', procId: null, persistenceId: item.id,
