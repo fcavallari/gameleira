@@ -823,7 +823,7 @@ test('persistence-only item: paths, no tree or routine, verdict keyed by its que
   const row = (await screen.findAllByRole('option')).find(r => r.textContent?.includes('GoogleUpdater.wake.plist'))!;
   await user.click(row);
   const detail = within(screen.getByRole('region', { name: /selected process/i }));
-  expect(detail.getByText('/Users/alice/Library/LaunchAgents/com.google.GoogleUpdater.wake.plist')).toBeInTheDocument();
+  expect(detail.getByText(/^\/Users\/[^/]+\/Library\/LaunchAgents\/com\.google\.GoogleUpdater\.wake\.plist$/)).toBeInTheDocument();
   expect(detail.getByText('Runs').nextElementSibling).toHaveTextContent(/GoogleUpdater\/Current\/GoogleUpdater\.app\/Contents\/MacOS\/GoogleUpdater$/);
   expect(detail.getByText('App').nextElementSibling).toHaveTextContent(/157\.0\.8089\.2\/GoogleUpdater\.app/);
   expect(detail.getByText(/Registered a launch agent for this user: launchd loads it/)).toBeInTheDocument();

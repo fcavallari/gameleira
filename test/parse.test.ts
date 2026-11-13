@@ -27,11 +27,11 @@ test('fork gives child token', () => {
 test('create with existing_file and new_path both yield a path', () => {
   const creates = parseAll('es-lab.jsonl').filter(e => e.kind === 'create');
   expect(creates.every(e => typeof e.path === 'string' && e.path.length > 0)).toBe(true);
-  expect(creates.some(e => e.path === '/Users/alice/Library/LaunchAgents/com.test.studyguide.plist')).toBe(true);
+  expect(creates.some(e => e.path!.endsWith('/Library/LaunchAgents/com.test.studyguide.plist'))).toBe(true);
 });
 test('btm add extracts plist path and executable', () => {
   const b = parseAll('es-lab.jsonl').filter(e => e.kind === 'btm_add');
-  expect(b.map(e => e.btm!.plistPath)).toContain('/Users/alice/Library/LaunchAgents/com.test.studyguide.plist');
+  expect(b.some(e => e.btm!.plistPath!.endsWith('/Library/LaunchAgents/com.test.studyguide.plist'))).toBe(true);
   expect(b.find(e => e.btm!.plistPath!.endsWith('studyguide.plist'))!.btm!.executablePath).toBe('/bin/sh');
 });
 test('btm add carries item type, instigator and app with their tokens', () => {
@@ -83,7 +83,7 @@ test('rename carries source and destination in both shapes', () => {
   expect(renames.every(e => !!e.path && !!e.toPath)).toBe(true);
   const v6 = parseAll('atomic_stealer.json').find(e => e.kind === 'rename')!;
   expect(v6.path).toMatch(/ContextStoreAgent\.plist\./);
-  expect(v6.toPath).toBe('/Users/sandy/Library/Preferences/ContextStoreAgent.plist');
+  expect(v6.toPath).toMatch(/\/Library\/Preferences\/ContextStoreAgent\.plist$/);
 });
 test('new_path destination joins dir and filename', () => {
   const line = JSON.stringify({

@@ -74,7 +74,7 @@ export const fmtTime = (t: string | null): string =>
 export const fmtArgs = (args: string[]): string =>
   args.map(a => (a === '' || /\s/.test(a) ? `"${a}"` : a)).join(' ');
 
-/** The first schema version with the exec stdin data the `shell-from-pipe` rule needs (spec §4). */
+/** The first schema version with the exec stdin data the `shell-from-pipe` rule needs. */
 export const MODERN_SCHEMA = 11;
 const MAX_OTHER_SHOWN = 5;
 

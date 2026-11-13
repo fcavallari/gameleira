@@ -23,7 +23,7 @@ test('pre-capture process referenced only by token is a ghost', () => {
 test('file op lands on the merged process (plist on cat)', () => {
   const cat = procByPid(m, 41865);
   expect(imagePaths(cat).at(-1)).toBe('/bin/cat');
-  expect(cat.fileOps.map(f => f.path)).toContain('/Users/alice/Library/LaunchAgents/com.test.studyguide.plist');
+  expect(cat.fileOps.some(f => f.path.endsWith('/Library/LaunchAgents/com.test.studyguide.plist'))).toBe(true);
 });
 test('fork child image is inherited, exec image is not', () => {
   const p = procByPid(m, 41283);

@@ -178,7 +178,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
       s = await store.createSession(name);
     } catch (e) { report('Could not create the session', e); return null; }
     if (first) {
-      // Spec §3: sessions must survive closing the tab, so ask the browser not to evict them. Failure is not fatal.
+      // Sessions must survive closing the tab, so ask the browser not to evict them. Failure is not fatal.
       void (async () => {
         try { await navigator.storage?.persist?.(); } catch { /* best-effort */ }
         await refreshPersisted();

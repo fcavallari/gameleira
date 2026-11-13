@@ -6,7 +6,7 @@ import { TriageView } from './TriageView';
 import { useSession, type View } from './session-context';
 import { captureInfo } from './triage-model';
 
-// Spec §4.2, verbatim.
+// The command the capture screen tells the user to run: the events the rules and the tree need.
 const CAPTURE_CMD =
   'sudo eslogger fork exec exit create rename unlink setextattr btm_launch_item_add btm_launch_item_remove > capture.jsonl';
 
