@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import type { LoadedCapture } from '../ingest/load';
 import { displayName } from '../model/relations';
 import type { PersistenceItem, ProcId } from '../model/types';
-import { itemPathKind } from '../model/util';
+import { itemPathKind, latestImage } from '../model/util';
 import { launchTarget, persistenceOwner } from '../rules/rules';
 import { fmtTime } from './triage-model';
 
@@ -31,6 +31,8 @@ export function LaunchItem({ cap, item, current, onSelect }: {
 }) {
   const m = cap.model;
   const registrant = REGISTRANTS.map(field => ({ id: item[field], label: LABEL[field] })).find(r => r.id !== null && m.processes.has(r.id));
+  const registrantProc = registrant ? m.processes.get(registrant.id!) : undefined;
+  const relays = registrantProc !== undefined && latestImage(registrantProc)?.isPlatform === true;
   const owner = persistenceOwner(m, item);
   const kind = itemPathKind(item.plistPath);
   const target = launchTarget(item);
@@ -42,7 +44,7 @@ export function LaunchItem({ cap, item, current, onSelect }: {
   if (item.appPath && !(item.plistPath !== null && same(item.appPath, item.plistPath))) rows.push(['App', <Code>{item.appPath}</Code>]);
   rows.push(['Time', <span className="mono">{fmtTime(item.time)}</span>]);
   rows.push(['Registered by', registrant
-    ? <>{who(cap, registrant.id!, onSelect)} <span className="muted">({registrant.label})</span></>
+    ? <>{who(cap, registrant.id!, onSelect)} <span className="muted">({registrant.label}{relays ? '; an Apple system process, which may only be relaying the request for someone else' : ''})</span></>
     : <span className="muted">no captured process: the event names none that was seen</span>]);
   if (m.processes.has(item.emitter)) {
     rows.push(['Reported by', <>{who(cap, item.emitter, onSelect)} <span className="muted">(the system daemon that emitted the event; it reports registrations, it does not make them)</span></>]);

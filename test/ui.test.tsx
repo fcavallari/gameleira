@@ -907,19 +907,31 @@ test('a process row that carries a persistence finding shows its launch item: ty
   expect(field('Item type')).toHaveTextContent('Launch agent');
   expect(field('Plist')).toHaveTextContent(/\/Library\/LaunchAgents\/com\.test\.studyguide\.plist$/);
   expect(field('Runs')).toHaveTextContent('/bin/sh');
-  expect(field('Registered by')).toHaveTextContent('smd (instigator)');   // the XPC caller; es-lab's event has no app
+  expect(field('Registered by')).toHaveTextContent(/^smd \(instigator; an Apple system process/);   // the XPC caller; es-lab's event has no app
   expect(field('Reported by')).toHaveTextContent(/backgroundtaskmanagementd/);   // the daemon that emitted the event is not the registrant
   expect(field('Finding on')).toHaveTextContent('this process (plist writer)');
   expect(pane().getAllByText(/T1543\.001 · Launch Agent/).length).toBeGreaterThan(0);
 }, 60_000);
 
-test('a launch item that no process owns shows no registrant and says it stands alone', async () => {
+test('a launch item no process owns says it stands alone, and an Apple system registrant is glossed as possibly a relay', async () => {
   renderTriage(await loadEsLab());
   await user.click(screen.getAllByRole('option').find(r => r.textContent?.includes('GoogleUpdater.wake.plist'))!);
   expect(field('Item type')).toHaveTextContent('Launch agent');
-  expect(field('Registered by')).toHaveTextContent('smd (instigator)');
+  expect(field('Registered by')).toHaveTextContent(/smd \(instigator; an Apple system process, which may only be relaying/);
   expect(field('Finding on')).toHaveTextContent(/no process: this item stands alone/);
 }, 60_000);
+
+test('a launch item with no captured app, instigator, creator or emitter says so instead of naming anyone', async () => {
+  const cap = synthCapture(capture([], [persistenceItem({
+    id: 'btm:8', itemType: 4, plistPath: '/Library/LaunchDaemons/com.x.plist', executablePath: '/usr/local/bin/x', emitter: 'ghost:1',
+  })]));
+  renderTriage(cap);
+  await user.click(screen.getAllByRole('option').find(r => r.textContent?.includes('persistence: com.x.plist'))!);
+  expect(field('Item type')).toHaveTextContent('Launch daemon');
+  expect(field('Registered by')).toHaveTextContent('no captured process');
+  expect(field('Finding on')).toHaveTextContent('no process: this item stands alone');
+  expect(pane().queryByText('Reported by', { selector: 'dt' })).not.toBeInTheDocument();
+});
 
 test('a login item whose URL is the app bundle is labelled App, not Plist, and names its app as the registrant', async () => {
   const exe = '/Applications/Evil.app/Contents/MacOS/Evil';
