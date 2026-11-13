@@ -9,7 +9,7 @@
     "pretest": "vite build",
     "test": "vitest run"
   },
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.26",
