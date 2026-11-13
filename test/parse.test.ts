@@ -76,6 +76,15 @@ test('unlink, write, setextattr, unknown events', () => {
     .toMatchObject({ kind: 'setextattr', path: '/c', xattr: 'com.apple.quarantine' });
   expect(mk({ mmap: {} })).toMatchObject({ kind: 'other', rawType: 'mmap' });
 });
+test('event keys that are Object.prototype names are other events', () => {
+  const mk = (event: object) => parseLine(JSON.stringify({
+    version: 11, time: 't', global_seq_num: 1,
+    process: { audit_token: { pid: 1, pidversion: 2 } }, event,
+  })) as NormEvent;
+  for (const k of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+    expect(mk({ [k]: {} })).toMatchObject({ kind: 'other', rawType: k });
+  }
+});
 test('v6 exec stdinIsPipe is boolean; process without audit_token is bad', () => {
   const evs = parseAll('atomic_stealer.json').filter(e => e.kind === 'exec');
   expect(evs.every(e => typeof e.stdinIsPipe === 'boolean')).toBe(true); // v6 fixture has fds

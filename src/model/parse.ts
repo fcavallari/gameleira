@@ -4,11 +4,12 @@ import { fileUrlToPath } from './util';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Json = any;
 
-const KIND_BY_KEY: Record<string, EventKind> = {
-  fork: 'fork', exec: 'exec', exit: 'exit', create: 'create', rename: 'rename',
-  unlink: 'unlink', write: 'write', setextattr: 'setextattr',
-  btm_launch_item_add: 'btm_add', btm_launch_item_remove: 'btm_remove',
-};
+// A Map, so an event named after an Object.prototype key (`constructor`) is 'other', not a prototype member.
+const KIND_BY_KEY = new Map<string, EventKind>([
+  ['fork', 'fork'], ['exec', 'exec'], ['exit', 'exit'], ['create', 'create'], ['rename', 'rename'],
+  ['unlink', 'unlink'], ['write', 'write'], ['setextattr', 'setextattr'],
+  ['btm_launch_item_add', 'btm_add'], ['btm_launch_item_remove', 'btm_remove'],
+]);
 
 function tokenOf(t: Json): TokenKey | null {
   if (!t || typeof t.pid !== 'number' || typeof t.pidversion !== 'number') return null;
@@ -58,7 +59,7 @@ function normalize(o: Json): NormEvent {
   const rawType = Object.keys(o.event)[0];
   if (rawType === undefined) throw new Error('empty event');
   const e = o.event[rawType] ?? {};
-  const kind = KIND_BY_KEY[rawType] ?? 'other';
+  const kind = KIND_BY_KEY.get(rawType) ?? 'other';
   const ev: NormEvent = {
     seq: o.global_seq_num ?? 0,
     time: o.time ?? '',

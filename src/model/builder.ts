@@ -32,7 +32,7 @@ export class ModelBuilder {
   private tokenIndex = new Map<string, ProcId>();
   private latestByPid = new Map<number, Process>();
   private persistence: CaptureModel['persistence'] = [];
-  private otherEvents: Record<string, number> = {};
+  private otherEvents = new Map<string, number>();
 
   addLine(line: string): void {
     this.lines++;
@@ -48,7 +48,7 @@ export class ModelBuilder {
     const last = events[events.length - 1];
     const stats: CaptureStats = {
       lines: this.lines, events: events.length, badLines: this.badLines,
-      otherEvents: this.otherEvents,
+      otherEvents: Object.fromEntries(this.otherEvents),
       versions: [...new Set(events.map(e => e.version))].sort((a, b) => a - b),
       firstSeq: first ? first.seq : null,
       firstTime: first ? first.time : null,
@@ -147,7 +147,7 @@ export class ModelBuilder {
         break;
       }
       case 'other':
-        this.otherEvents[ev.rawType] = (this.otherEvents[ev.rawType] ?? 0) + 1;
+        this.otherEvents.set(ev.rawType, (this.otherEvents.get(ev.rawType) ?? 0) + 1);
         break;
     }
   }

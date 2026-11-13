@@ -128,6 +128,14 @@ test('btm, other events and line stats', () => {
     lines: 4, events: 2, badLines: 1, otherEvents: { mmap: 1 }, versions: [11], firstSeq: 1,
   });
 });
+test('events named after Object.prototype keys are counted as other', () => {
+  const lines = ['constructor', 'toString', '__proto__', 'constructor'].map((k, i) =>
+    `{"global_seq_num":${i + 1},"time":"t","version":11,"process":{"audit_token":{"pid":1,"pidversion":1}},"event":{"${k}":{}}}`);
+  const m9 = buildModel(lines);
+  expect(m9.stats.events).toBe(4);
+  expect(m9.stats.otherEvents).toEqual({ constructor: 2, toString: 1, ['__proto__']: 1 });
+  expect(Object.getPrototypeOf(m9.stats.otherEvents)).toBe(Object.prototype);
+});
 test('new token with same pid and start_time as a live process is a missed exec', () => {
   const T = '2026-01-01T00:00:00.5Z';
   const m7 = buildModel([
