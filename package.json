@@ -1,7 +1,7 @@
 {
-  "name": "eslogger-viewer",
+  "name": "gameleira",
   "version": "1.0.0",
-  "description": "Single-file viewer that triages Apple eslogger captures",
+  "description": "A macOS process tree viewer for eslogger captures that follows every root, not just the parent PID",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

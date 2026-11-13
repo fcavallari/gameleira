@@ -114,3 +114,8 @@ test('a newer version opened elsewhere makes this connection step aside, and the
   await s2.renameSession(sess.id, 'renamed');
   expect((await s2.listSessions())[0]!.name).toBe('renamed');
 });
+
+test('the default database is named gameleira', async () => {
+  await openStore();
+  expect((await indexedDB.databases()).map(d => d.name)).toContain('gameleira');
+});

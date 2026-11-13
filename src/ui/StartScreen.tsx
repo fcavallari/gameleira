@@ -33,9 +33,9 @@ export function StartScreen() {
 
   return (
     <main className="shell">
-      <h1>eslogger viewer</h1>
+      <h1>Gameleira</h1>
       <StoreErrorBanner />
-      <p className="muted">Triage Apple eslogger captures. Everything stays in this browser; nothing is uploaded.</p>
+      <p className="muted">macOS process trees for eslogger captures. Everything stays in this browser; nothing is uploaded.</p>
 
       <section>
         <div className="row">

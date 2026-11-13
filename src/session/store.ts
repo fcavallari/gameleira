@@ -38,7 +38,7 @@ interface Schema extends DBSchema {
   routine: { key: [string, string]; value: RoutineRec };
 }
 
-const DB_NAME = 'eslogger-viewer';
+const DB_NAME = 'gameleira';
 
 /** Every composite key beginning with `prefix`: arrays sort above any string, so `[...prefix, []]` closes the range. */
 function prefixRange(...prefix: string[]): IDBKeyRange {

@@ -743,7 +743,7 @@ describe('fix round 2', () => {
       expect(r.explanation).toMatch(/--version/);
       expect(r.explanation).toMatch(/for python also -V, -VV, -h/);
       expect(r.explanation).toMatch(/-V, which ruby rejects as invalid and exits/);
-      expect(r.explanation).toMatch(/ruby -v probe followed by - still reads the piped script/);
+      expect(r.explanation).toMatch(/ruby -v probe, alone or in a cluster, followed by - still reads the piped script/);
       expect(r.explanation).not.toMatch(/bare -v/);
     });
   });

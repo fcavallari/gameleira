@@ -39,8 +39,10 @@ export function ConfirmedTab() {
     .filter(v => v.status === 'confirmed')
     .sort((a, b) => fileName(a.fingerprint).localeCompare(fileName(b.fingerprint)) || a.snapshot.name.localeCompare(b.snapshot.name));
 
-  /** exportSession adds process details only for loaded captures. */
-  const leftOut = confirmed.filter(v => !c.captures.has(v.fingerprint)).length;
+  /** exportSession adds process details only for loaded captures; a launch item (key `i:…`) has no process, so none to add. */
+  const isLaunchItem = (key: string): boolean => key.startsWith('i:');
+  const leftOut = confirmed.filter(v => !isLaunchItem(v.procKey) && !c.captures.has(v.fingerprint)).length;
+  const hasLaunchItems = confirmed.some(v => isLaunchItem(v.procKey));
 
   const doExport = async () => {
     setError(null);
@@ -49,7 +51,7 @@ export function ConfirmedTab() {
       const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${slug(session.name)}.eslogger-session.json`;
+      a.download = `${slug(session.name)}.gameleira-session.json`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -74,9 +76,10 @@ export function ConfirmedTab() {
       </p>
       {leftOut > 0 && (
         <p className="warn small">
-          Details for {leftOut} confirmed {leftOut === 1 ? 'process are' : 'processes are'} left out because their captures aren’t loaded; re-add them to include.
+          Details for {leftOut} confirmed {leftOut === 1 ? 'process is' : 'processes are'} left out because {leftOut === 1 ? 'its capture isn’t' : 'their captures aren’t'} loaded; re-add {leftOut === 1 ? 'it' : 'them'} to include.
         </p>
       )}
+      {hasLaunchItems && <p className="muted small">Launch items are exported from their snapshot.</p>}
       {error && <p role="alert" className="error">{error}</p>}
 
       {confirmed.length === 0 ? (

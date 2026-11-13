@@ -376,7 +376,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
           verdictRef.current = [...verdictRef.current.filter(x => x !== v), ...(last ? [last] : [])];
           setAllVerdicts(verdictRef.current);
         }
-        if (e instanceof WriteTimeout) setStoreError('Could not save the verdict (the store is not responding)');
+        if (e instanceof WriteTimeout) setStoreError('Could not confirm the verdict was saved (the store is not responding); it may still be saved.');
         else report('Could not save the verdict', e);
       }
       return;

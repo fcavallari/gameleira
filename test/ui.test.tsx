@@ -242,7 +242,7 @@ test('Confirmed tab lists confirmed verdicts of every capture, labelled; export 
   expect(clicked[0]).toMatch(/^lab.*\.json$/);
   const blob = vi.mocked(URL.createObjectURL).mock.calls[0]![0] as Blob;
   const exported = JSON.parse(await readBlob(blob)) as { format: string; verdicts: unknown[] };
-  expect(exported.format).toBe('eslogger-viewer-session');
+  expect(exported.format).toBe('gameleira-session');
   expect(exported.verdicts).toHaveLength(3);
 
   // import creates a new session, never touches this one
@@ -284,7 +284,7 @@ test('import shows the error for a file that is not a session export', async () 
   await newSession('lab');
   await user.click(await screen.findByRole('tab', { name: 'Confirmed' }));
   await user.upload(screen.getByLabelText(/import session/i), new File(['{"nope":1}'], 'x.json'));
-  expect(await screen.findByText(/not an eslogger-viewer session export/)).toBeInTheDocument();
+  expect(await screen.findByText(/not a Gameleira session export/)).toBeInTheDocument();
 });
 
 function Boom(): never { throw new Error('boom'); }
@@ -1068,7 +1068,7 @@ test('a write that never settles is reported after 10 s, rolled back, and does n
     await act(async () => { await vi.advanceTimersByTimeAsync(9_900); });
     expect(ctx.storeError).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(200); await first; });
-    expect(ctx.storeError).toBe('Could not save the verdict (the store is not responding)');
+    expect(ctx.storeError).toBe('Could not confirm the verdict was saved (the store is not responding); it may still be saved.');
     expect(ctx.verdicts.size).toBe(0);   // rolled back to what was last stored: nothing
     await act(async () => { await ctx.toggleVerdict(id, 'benign'); });   // the queue is free again
     expect(ctx.verdicts.get(id)?.status).toBe('benign');
@@ -1094,6 +1094,36 @@ test('the export choices survive a trip to another tab, and the tab says how man
   await user.click(screen.getByRole('tab', { name: 'Confirmed' }));
   expect(screen.getByLabelText(/redact command-line arguments/i)).toBeChecked();
   expect(screen.getByLabelText(/include environment variables/i)).toBeChecked();
+});
+
+/** A session with a stored capture that is not loaded and these confirmed verdicts (keys), opened on the Confirmed tab. */
+async function confirmedTab(...keys: string[]): Promise<void> {
+  const store = await openStore();
+  const s = await store.createSession('lab');
+  await store.upsertCapture({ sessionId: s.id, fingerprint: 'fpA', fileName: 'monday.jsonl', size: 1, events: 1, processes: 1, flagged: 0, added: 't' });
+  for (const k of keys) await store.setVerdict(seedVerdict(s.id, 'fpA', k, 'confirmed', `note ${k}`));
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: 'lab' }));
+  await user.click(await screen.findByRole('tab', { name: 'Confirmed' }));
+}
+
+test('confirmed launch items are never counted as left out: they have no process details to re-add a capture for', async () => {
+  await confirmedTab('i:btm:12');
+  expect(await screen.findByText('note i:btm:12')).toBeInTheDocument();
+  expect(screen.queryByText(/left out/)).not.toBeInTheDocument();
+  expect(screen.getByText(/Launch items are exported from their snapshot/)).toBeInTheDocument();
+});
+
+test('next to a confirmed launch item, only the confirmed process is counted as left out', async () => {
+  await confirmedTab('i:btm:12', '700:1');
+  expect(await screen.findByText(/Details for 1 confirmed process is left out because its capture isn.t loaded; re-add it to include/)).toBeInTheDocument();
+  expect(screen.getByText(/Launch items are exported from their snapshot/)).toBeInTheDocument();
+});
+
+test('a session with no confirmed launch item does not mention them', async () => {
+  await confirmedTab('700:1');
+  expect(await screen.findByText(/Details for 1 confirmed process is left out/)).toBeInTheDocument();
+  expect(screen.queryByText(/Launch items are exported/)).not.toBeInTheDocument();
 });
 
 test('no "left out" notice when every confirmed process has its capture loaded', async () => {

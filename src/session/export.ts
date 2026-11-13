@@ -4,11 +4,15 @@ import type { FileOp, Image } from '../model/types';
 import type { CaptureRec, RoutineRec, Session, Store, Verdict, VerdictSnapshot } from './store';
 
 export type ExportImage = Omit<Image, 'env'> & { env?: string[] | null };
+/** The format name an export carries; the app was called eslogger viewer before it was Gameleira, and its files still import. */
+const FORMAT = 'gameleira-session';
+const LEGACY_FORMAT = 'eslogger-viewer-session';
+
 export interface ProcessDetail extends VerdictSnapshot {
   images: ExportImage[]; fileOps: FileOp[]; ancestry: string[];
 }
 export interface SessionExport {
-  format: 'eslogger-viewer-session'; version: 1;
+  format: typeof FORMAT; version: 1;
   session: Session; captures: CaptureRec[]; verdicts: Verdict[]; routine: RoutineRec[];
   /** Keyed `${fingerprint}|${procKey}`; only confirmed processes whose capture is loaded. */
   details: Record<string, ProcessDetail>;
@@ -51,7 +55,7 @@ export async function exportSession(
       ancestry: ancestry(cap.model, p.id, 'original').map(id => displayName(cap.model, id)),
     };
   }
-  return { format: 'eslogger-viewer-session', version: 1, session, captures, verdicts, routine, details };
+  return { format: FORMAT, version: 1, session, captures, verdicts, routine, details };
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
@@ -84,7 +88,7 @@ function rows(data: Record<string, unknown>, field: string, keys: string[], extr
 
 /** Throws a clear error unless `data` is a complete, readable session export. Writes nothing. */
 function validateExport(data: unknown): asserts data is SessionExport {
-  if (!isObj(data) || data.format !== 'eslogger-viewer-session') throw new Error('not an eslogger-viewer session export');
+  if (!isObj(data) || (data.format !== FORMAT && data.format !== LEGACY_FORMAT)) throw new Error('not a Gameleira session export');
   if (data.version !== 1) throw new Error(`unsupported session export version ${String(data.version)} (this build reads version 1)`);
   if (!isObj(data.session) || typeof data.session.name !== 'string') throw new Error('invalid session export: "session" must have a name');
   rows(data, 'captures', ['fingerprint', 'fileName', 'added'], validCapture);
