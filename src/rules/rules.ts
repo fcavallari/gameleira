@@ -24,10 +24,37 @@ const SHELL_NAMES = new Set([...SHELLS].map(basename));
 /** Script interpreters, versioned names included (python3.11, perl5.30). */
 const INTERPRETER = /^(?:python[0-9.]*|perl[0-9.]*|ruby[0-9.]*|osascript|node|php)$/;
 
-export const RECON_TOOLS: Set<string> = new Set([
-  'system_profiler', 'sw_vers', 'whoami', 'id', 'hostname', 'sysctl', 'ioreg', 'uname', 'ps',
-  'airport', 'scutil', 'networksetup', 'security', 'csrutil', 'spctl',
+/** Discovery tools, each with the technique it fits and what it finds out. */
+const RECON_KINDS: Record<string, { mitre: string; what: string }> = {
+  process: { mitre: 'T1057', what: 'Lists the running processes.' },
+  network: { mitre: 'T1016', what: 'Reads the network configuration (interfaces, Wi-Fi, DNS, proxies).' },
+  security: { mitre: 'T1518.001', what: 'Checks the security settings (System Integrity Protection, Gatekeeper).' },
+  user: { mitre: 'T1033', what: 'Finds out which user it is running as.' },
+  system: { mitre: 'T1082', what: 'Gathers information about the machine (hardware, macOS version, name).' },
+};
+export const RECON_TOOLS: Map<string, keyof typeof RECON_KINDS> = new Map([
+  ['ps', 'process'], ['networksetup', 'network'], ['scutil', 'network'], ['airport', 'network'],
+  ['csrutil', 'security'], ['spctl', 'security'], ['whoami', 'user'], ['id', 'user'],
+  ['system_profiler', 'system'], ['sw_vers', 'system'], ['sysctl', 'system'], ['ioreg', 'system'], ['uname', 'system'], ['hostname', 'system'],
 ]);
+const RECON_TAIL = ' Attackers do this to size up a machine, but so does plenty of normal software, so on its own it is only context.';
+
+/** `security` subcommands that read secrets out of a keychain, or open one up for reading. */
+const KEYCHAIN_ACTIONS: Record<string, string> = {
+  'find-generic-password': 'looks up a saved password item (with -w or -g it prints the password)',
+  'find-internet-password': 'looks up a saved website or server password (with -w or -g it prints the password)',
+  'dump-keychain': 'lists every item in a keychain (with -d it includes the secrets)',
+  'export': 'exports keys or certificates out of a keychain',
+  'unlock-keychain': 'unlocks a keychain with its password, so its items can be read',
+};
+/** The `security` subcommand: the first argument that is not an option (`-p` takes a prompt as its value). */
+function securitySubcommand(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '-p') { i++; continue; }
+    if (!args[i]!.startsWith('-')) return args[i];
+  }
+  return undefined;
+}
 
 /**
  * Where an odd location is. Strong kinds are places a normal install never runs from: temporary folders, Downloads,
@@ -206,6 +233,20 @@ export const RULES: Rule[] = [
     match: ({ img }) => {
       if (basename(img.path) !== 'osascript' || !img.args) return null;
       return /display dialog|password|hidden answer/i.test(img.args.join(' ')) ? { evidence: cmdline(img) } : null;
+    },
+  },
+  {
+    id: 'keychain-access', title: 'Keychain read with security', severity: 'high',
+    explanation: 'Ran `security` to read passwords, keys or certificates out of the macOS keychain (find-generic-password, find-internet-password, dump-keychain, export, unlock-keychain). Stealers use it to pull saved passwords, such as the key that unlocks Chrome\'s stored logins.',
+    mitre: ['T1555.001'], scope: 'image',
+    match: ({ img }) => {
+      if (basename(img.path) !== 'security') return null;
+      const sub = securitySubcommand(rest(img));
+      if (sub === undefined || !Object.hasOwn(KEYCHAIN_ACTIONS, sub)) return null;
+      return {
+        evidence: cmdline(img),
+        explanation: `Ran \`security ${sub}\`, which ${KEYCHAIN_ACTIONS[sub]}. Stealers use the keychain to pull saved passwords, such as the key that unlocks Chrome's stored logins.`,
+      };
     },
   },
   {
@@ -412,8 +453,13 @@ export const RULES: Rule[] = [
   },
   {
     id: 'recon', title: 'System or user discovery', severity: 'low',
-    explanation: 'Gathers information about the machine or user.',
-    mitre: ['T1082', 'T1033'], scope: 'image',
-    match: ({ img }) => RECON_TOOLS.has(basename(img.path)) ? { evidence: cmdline(img) } : null,
+    explanation: `Runs a tool that finds out about the machine, its user, network, processes or security settings.${RECON_TAIL}`,
+    mitre: ['T1057', 'T1016', 'T1518.001', 'T1033', 'T1082'], scope: 'image',
+    match: ({ img }) => {
+      const kind = RECON_TOOLS.get(basename(img.path));
+      if (kind === undefined) return null;
+      const { mitre, what } = RECON_KINDS[kind]!;
+      return { evidence: cmdline(img), mitre: [mitre], explanation: `${what}${RECON_TAIL}` };
+    },
   },
 ];

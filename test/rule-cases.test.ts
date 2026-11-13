@@ -222,3 +222,30 @@ describe('process-scoped rules see processes that fork and never exec', () => {
     expect(fs).toHaveLength(1);
   });
 });
+
+describe('keychain access and recon by technique', () => {
+  const run = (path: string, args: string[]) => analyze(capture([proc('100:1', [apple(path, args)])]));
+  test('security reading or exporting keychain items is high T1555.001', () => {
+    for (const args of [['security', 'find-generic-password', '-ga', 'Chrome'], ['security', 'find-internet-password', '-s', 'x'],
+      ['security', 'dump-keychain', '-d'], ['security', 'export', '-k', 'login.keychain'], ['security', '-q', 'unlock-keychain', '-p', 'pw']]) {
+      const q = run('/usr/bin/security', args).queue[0];
+      expect(q?.severity, args.join(' ')).toBe('high');
+      const f = q!.findings.find(x => x.ruleId === 'keychain-access')!;
+      expect(f.mitre).toEqual(['T1555.001']);
+      expect(f.explanation).toContain(`security ${args.find(a => !a.startsWith('-') && a !== 'security')}`);
+    }
+  });
+  test('other security subcommands are not keychain access, and security is no longer recon', () => {
+    const a = run('/usr/bin/security', ['security', 'find-certificate', '-c', 'export']);
+    expect(allFindings(a).map(f => f.ruleId)).toEqual([]);
+  });
+  test('recon cites the technique of the tool that ran', () => {
+    const cases: [string, string][] = [['ps', 'T1057'], ['networksetup', 'T1016'], ['scutil', 'T1016'], ['airport', 'T1016'],
+      ['csrutil', 'T1518.001'], ['spctl', 'T1518.001'], ['whoami', 'T1033'], ['id', 'T1033'], ['system_profiler', 'T1082'],
+      ['sw_vers', 'T1082'], ['sysctl', 'T1082'], ['ioreg', 'T1082'], ['uname', 'T1082'], ['hostname', 'T1082']];
+    for (const [tool, id] of cases) {
+      const f = allFindings(run(`/usr/bin/${tool}`, [tool])).find(x => x.ruleId === 'recon')!;
+      expect(f.mitre, tool).toEqual([id]);
+    }
+  });
+});
