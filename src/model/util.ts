@@ -47,8 +47,22 @@ export function itemPathKind(path: string | null): 'plist' | 'app' | 'other' | n
   return /\.app\/*$/i.test(path) ? 'app' : 'other';
 }
 
-/** A relative path joined to the app bundle it is relative to; anything else (absolute, or no usable app) is returned as it is. */
+/**
+ * An absolute path, or a relative one joined to `base` (a working directory, or the app bundle a btm path is relative
+ * to) with `.` and `..` segments folded. `base` null or not absolute: returned as it is. The one resolver for both.
+ */
+export function resolvePath(path: string, base: string | null): string {
+  if (path.startsWith('/') || base === null || !base.startsWith('/')) return path;
+  const out: string[] = [];
+  for (const seg of `${base}/${path}`.split('/')) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') out.pop();
+    else out.push(seg);
+  }
+  return `/${out.join('/')}`;
+}
+
+/** A relative path resolved against the app bundle it is relative to; null stays null. */
 export function resolveAgainstApp(path: string | null, app: string | null): string | null {
-  if (path === null || path.startsWith('/') || app === null || !app.startsWith('/')) return path;
-  return `${app.replace(/\/+$/, '')}/${path.replace(/^\.\//, '')}`;
+  return path === null ? null : resolvePath(path, app);
 }

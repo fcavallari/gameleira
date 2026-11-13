@@ -54,40 +54,59 @@ const now = (): string => new Date().toISOString();
 
 /** `name` exists for test isolation; the app uses the default. */
 export async function openStore(name: string = DB_NAME): Promise<Store> {
-  const db: IDBPDatabase<Schema> = await openDB<Schema>(name, 1, {
+  let db: IDBPDatabase<Schema>;
+  /** False once the browser took the connection away (another tab upgrading the database, or the browser closing it). */
+  let live = true;
+  const connect = (version?: number): Promise<IDBPDatabase<Schema>> => openDB<Schema>(name, version, {
     upgrade(d) {
       d.createObjectStore('sessions', { keyPath: 'id' });
       d.createObjectStore('captures', { keyPath: ['sessionId', 'fingerprint'] });
       d.createObjectStore('verdicts', { keyPath: ['sessionId', 'fingerprint', 'procKey'] });
       d.createObjectStore('routine', { keyPath: ['sessionId', 'programKey'] });
     },
+    // Another tab wants a newer version: close, or its upgrade waits for this tab for ever. The next operation reopens.
+    blocking(_cur, _next, event) { live = false; (event.target as IDBDatabase).close(); },
+    // The browser dropped the connection (storage cleared, profile closed…). The next operation reopens.
+    terminated() { live = false; },
+    // Our open is waiting on an older connection of ours or of another tab; nothing to do but wait.
+    blocked() { /* the open resolves once the other connection closes */ },
   });
+  db = await connect(1);
+  let reopening: Promise<void> | null = null;
+  /** The live connection, reopened (at whatever version exists now) when it was taken away. */
+  const conn = async (): Promise<IDBPDatabase<Schema>> => {
+    if (!live) {
+      reopening ??= connect().then(d => { db = d; live = true; }).finally(() => { reopening = null; });
+      await reopening;
+    }
+    return db;
+  };
 
   return {
     async listSessions() {
-      const all = await db.getAll('sessions');
+      const all = await (await conn()).getAll('sessions');
       return all.sort((a, b) => b.updated.localeCompare(a.updated) || a.id.localeCompare(b.id));
     },
     async createSession(sessionName) {
       const t = now();
       const s: Session = { id: newId(), name: sessionName, created: t, updated: t };
-      await db.put('sessions', s);
+      await (await conn()).put('sessions', s);
       return s;
     },
     async renameSession(id, sessionName) {
-      const tx = db.transaction('sessions', 'readwrite');
+      const tx = (await conn()).transaction('sessions', 'readwrite');
       const s = await tx.store.get(id);
       if (s) await tx.store.put({ ...s, name: sessionName, updated: now() });
       await tx.done;
     },
     async touchSession(id) {
-      const tx = db.transaction('sessions', 'readwrite');
+      const tx = (await conn()).transaction('sessions', 'readwrite');
       const s = await tx.store.get(id);
       if (s) await tx.store.put({ ...s, updated: now() });
       await tx.done;
     },
     async deleteSession(id) {
-      const tx = db.transaction(['sessions', 'captures', 'verdicts', 'routine'], 'readwrite');
+      const tx = (await conn()).transaction(['sessions', 'captures', 'verdicts', 'routine'], 'readwrite');
       await Promise.all([
         tx.objectStore('sessions').delete(id),
         tx.objectStore('captures').delete(prefixRange(id)),
@@ -97,29 +116,29 @@ export async function openStore(name: string = DB_NAME): Promise<Store> {
       ]);
     },
     async upsertCapture(rec) {
-      const tx = db.transaction('captures', 'readwrite');
+      const tx = (await conn()).transaction('captures', 'readwrite');
       const prev = await tx.store.get([rec.sessionId, rec.fingerprint]);
       await tx.store.put(prev ? { ...rec, added: prev.added } : rec);
       await tx.done;
       return prev ? 'updated' : 'added';
     },
-    listCaptures: sessionId => db.getAll('captures', prefixRange(sessionId)),
+    listCaptures: async sessionId => (await conn()).getAll('captures', prefixRange(sessionId)),
     async setVerdict(v) {
-      await db.put('verdicts', v);
+      await (await conn()).put('verdicts', v);
     },
-    listVerdicts: (sessionId, fingerprint) =>
-      db.getAll('verdicts', fingerprint === undefined ? prefixRange(sessionId) : prefixRange(sessionId, fingerprint)),
+    listVerdicts: async (sessionId, fingerprint) =>
+      (await conn()).getAll('verdicts', fingerprint === undefined ? prefixRange(sessionId) : prefixRange(sessionId, fingerprint)),
     async addRoutine(r) {
-      await db.put('routine', r);
+      await (await conn()).put('routine', r);
     },
     async removeRoutine(sessionId, programKey) {
-      await db.delete('routine', [sessionId, programKey]);
+      await (await conn()).delete('routine', [sessionId, programKey]);
     },
-    listRoutine: sessionId => db.getAll('routine', prefixRange(sessionId)),
+    listRoutine: async sessionId => (await conn()).getAll('routine', prefixRange(sessionId)),
     async importAll(sessionName, captures, verdicts, routine) {
       const t = now();
       const s: Session = { id: newId(), name: sessionName, created: t, updated: t };
-      const tx = db.transaction(['sessions', 'captures', 'verdicts', 'routine'], 'readwrite');
+      const tx = (await conn()).transaction(['sessions', 'captures', 'verdicts', 'routine'], 'readwrite');
       const pending: Promise<unknown>[] = [tx.done];
       try {
         // put() can throw synchronously (invalid key) after earlier puts were queued: collect every promise

@@ -99,3 +99,18 @@ test('touchSession bumps updated and nothing else', async () => {
   await store.touchSession('missing');   // unknown id is a no-op
   expect(await store.listSessions()).toHaveLength(1);
 });
+
+test('a newer version opened elsewhere makes this connection step aside, and the store keeps working', async () => {
+  const name = `test-store-upgrade-${n}`;
+  const s2 = await openStore(name);
+  const sess = await s2.createSession('keep');
+  // Another tab opens a newer schema version: our connection gets a versionchange event and must close, or that open waits forever.
+  await new Promise<void>((resolve, reject) => {
+    const req = indexedDB.open(name, 2);
+    req.onsuccess = () => { req.result.close(); resolve(); };
+    req.onerror = () => { reject(req.error); };
+  });
+  expect((await s2.listSessions()).map(x => x.id)).toEqual([sess.id]);   // reopened on demand
+  await s2.renameSession(sess.id, 'renamed');
+  expect((await s2.listSessions())[0]!.name).toBe('renamed');
+});

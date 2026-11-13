@@ -74,8 +74,5 @@ export function oddLocation(path: string): OddLocation | null {
   return null;
 }
 
-/** An absolute path, or a relative one joined to the working directory when it is known. */
-export function resolvePath(path: string, cwd: string | null): string {
-  if (path.startsWith('/') || cwd === null) return path;
-  return `${cwd.replace(/\/+$/, '')}/${path.replace(/^\.\//, '')}`;
-}
+/** An absolute path, or a relative one joined to the working directory when it is known (the shared resolver, in the model). */
+export { resolvePath } from '../model/util';

@@ -2,7 +2,8 @@ import { Component, type ErrorInfo, type ReactNode } from 'react';
 
 /**
  * Last line of defence: a screen that throws would otherwise leave a blank page. This only shows a message. It never
- * touches the stored sessions (they live in IndexedDB and are read again after a reload).
+ * touches the stored sessions (they live in IndexedDB and are read again after a reload). A write that was still
+ * in flight when the screen failed may not have reached the store, so the message does not promise more than that.
  */
 export class ErrorBoundary extends Component<{ children: ReactNode; onReload?: () => void }, { failed: boolean }> {
   state = { failed: false };
@@ -19,7 +20,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode; onReload?: (
     return (
       <main className="shell">
         <div role="alert" className="banner">
-          <span className="grow">Something went wrong — reload. Your sessions are saved.</span>
+          <span className="grow">Something went wrong — reload. Your saved sessions are kept in this browser. A change you made in the last few seconds may not have been saved.</span>
           <button onClick={reload}>Reload</button>
         </div>
       </main>

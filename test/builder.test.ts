@@ -144,6 +144,12 @@ test('a btm item URL relative to the app is made absolute against the app URL, l
   expect(b!.plistPath).toBe('relative/x.plist');
   expect(c!.plistPath).toBe('/Applications/Evil.app/');
 });
+test('a relative btm item URL with ./ and .. segments resolves the way the executable path does', () => {
+  const m = buildModel([ev(1, proc('600:1', { path: '/usr/libexec/smd' }), { btm_launch_item_add: {
+    item: { item_type: 3, item_url: 'Contents/../Library/./LaunchAgents/x.plist', app_url: 'file:///Applications/Evil.app/' },
+  } })]);
+  expect(m.persistence[0]!.plistPath).toBe('/Applications/Evil.app/Library/LaunchAgents/x.plist');
+});
 test('events named after Object.prototype keys are counted as other', () => {
   const lines = ['constructor', 'toString', '__proto__', 'constructor'].map((k, i) =>
     `{"global_seq_num":${i + 1},"time":"t","version":11,"process":{"audit_token":{"pid":1,"pidversion":1}},"event":{"${k}":{}}}`);

@@ -61,6 +61,11 @@ test('the hash covers the first 200 complete lines: a change in line 200 shows, 
   expect(await fingerprint(new Blob([lines(250)]), 0, 't')).toBe(base);
 });
 
+test('CRLF and LF line endings give the same fingerprint', async () => {
+  const lf = Array.from({ length: 250 }, (_, i) => `{"n":${i}}\n`).join('');
+  expect(await fingerprint(new Blob([lf.replace(/\n/g, '\r\n')]), 1, 't')).toBe(await fingerprint(new Blob([lf]), 1, 't'));
+});
+
 test('a last line cut in the middle is not part of the hash', async () => {
   const text = Array.from({ length: 50 }, (_, i) => `{"n":${i}}\n`).join('');
   const whole = await fingerprint(new Blob([text]), 1, 't');

@@ -31,14 +31,16 @@ export function ImportSession() {
 
 export function ConfirmedTab() {
   const c = useSession();
-  const [includeEnv, setIncludeEnv] = useState(false);
-  const [redactArgs, setRedactArgs] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const session = c.session!;
+  const { includeEnv, redactArgs } = c.exportOpts;
   const fileName = (fp: string): string => c.capRecs.find(r => r.fingerprint === fp)?.fileName ?? 'unknown capture';
   const confirmed = c.allVerdicts
     .filter(v => v.status === 'confirmed')
     .sort((a, b) => fileName(a.fingerprint).localeCompare(fileName(b.fingerprint)) || a.snapshot.name.localeCompare(b.snapshot.name));
+
+  /** exportSession adds process details only for loaded captures. */
+  const leftOut = confirmed.filter(v => !c.captures.has(v.fingerprint)).length;
 
   const doExport = async () => {
     setError(null);
@@ -61,8 +63,8 @@ export function ConfirmedTab() {
     <div>
       <div className="row">
         <button className="primary" onClick={() => { void doExport(); }}>Export session</button>
-        <label className="inline"><input type="checkbox" checked={includeEnv} onChange={e => { setIncludeEnv(e.target.checked); }} /> Include environment variables</label>
-        <label className="inline"><input type="checkbox" checked={redactArgs} onChange={e => { setRedactArgs(e.target.checked); }} /> Redact command-line arguments</label>
+        <label className="inline"><input type="checkbox" checked={includeEnv} onChange={e => { c.setExportOpts({ includeEnv: e.target.checked }); }} /> Include environment variables</label>
+        <label className="inline"><input type="checkbox" checked={redactArgs} onChange={e => { c.setExportOpts({ redactArgs: e.target.checked }); }} /> Redact command-line arguments</label>
       </div>
       <p className="muted small">
         The export includes the full command line of every verdict, and those can contain secrets such as passwords
@@ -70,6 +72,11 @@ export function ConfirmedTab() {
         after the program name with [redacted]. Process details are exported for captures that are loaded now.
         Environment variables can hold secrets too; leave them out unless needed.
       </p>
+      {leftOut > 0 && (
+        <p className="warn small">
+          Details for {leftOut} confirmed {leftOut === 1 ? 'process are' : 'processes are'} left out because their captures aren’t loaded; re-add them to include.
+        </p>
+      )}
       {error && <p role="alert" className="error">{error}</p>}
 
       {confirmed.length === 0 ? (

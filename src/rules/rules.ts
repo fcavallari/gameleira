@@ -385,7 +385,7 @@ function persistenceSeverity(target: { path: string; isApp: boolean } | null, m:
 }
 
 /** Apple's own system daemons (smd, backgroundtaskmanagementd) instigate most launch item registrations. */
-const SYSTEM_DIRS = /^\/(?:System|usr\/libexec|usr\/sbin)\//;
+export const SYSTEM_DIRS = /^\/(?:System|usr\/libexec|usr\/sbin)\//;
 
 /**
  * The process a persistence finding attaches to, and through which link: the app that registered the item, else the

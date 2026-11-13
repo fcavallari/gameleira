@@ -64,6 +64,9 @@ export interface SessionCtx {
   updateTriageFilters(patch: Partial<TriageFilters>): void;
   progress: Progress | null;
   loadError: string | null;
+  /** The Confirmed tab's export choices. They live here so they survive a trip to another tab. */
+  exportOpts: { includeEnv: boolean; redactArgs: boolean };
+  setExportOpts(patch: Partial<{ includeEnv: boolean; redactArgs: boolean }>): void;
   openSession(id: string): Promise<void>;
   closeSession(): void;
   loadFiles(files: File[]): Promise<void>;
@@ -99,6 +102,16 @@ export function useSession(): SessionCtx {
   return c;
 }
 
+/** A verdict write that has not settled by now is given up on, so one stuck write cannot hold every later one. */
+const WRITE_TIMEOUT_MS = 10_000;
+class WriteTimeout extends Error {}
+function settleWithin<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => { reject(new WriteTimeout('the store is not responding')); }, ms);
+    p.then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e as Error); });
+  });
+}
+
 const now = (): string => new Date().toISOString();
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -122,6 +135,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
   const [triageFilters, setTriageFilters] = useState<TriageFilters>(DEFAULT_FILTERS);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [exportOpts, setExportOptsState] = useState({ includeEnv: false, redactArgs: false });
 
   // Synchronous mirrors: async actions must see the session that is open NOW, not the one they were created in.
   const sessionId = useRef<string | null>(null);
@@ -133,6 +147,8 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
   const queue = useRef<Promise<void>>(Promise.resolve());
   /** Verdict writes run one after another in the order they were made, so an older write can never land last. */
   const writes = useRef<Promise<unknown>>(Promise.resolve());
+  /** The verdict the store last accepted, per `${fingerprint}|${procKey}`: what a failed write goes back to. */
+  const stored = useRef(new Map<string, Verdict>());
   const latest = useRef({ session, capRecs, captures, active, allVerdicts, routine });
   latest.current = { session, capRecs, captures, active, allVerdicts, routine };
 
@@ -179,6 +195,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     queue.current = Promise.resolve();
     writes.current = Promise.resolve();
     verdictRef.current = [];
+    stored.current = new Map();
     setSession(null); setCapRecs([]); setCaptures(new Map()); setActiveFp(null); setView('triage');
     setAllVerdicts([]); setRoutine([]); setSelected(null); setSelectedItem(null); setFocus(null); setTriageFilters(DEFAULT_FILTERS); setProgress(null); setLoadError(null);
     void refreshSessions();
@@ -199,6 +216,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     writes.current = Promise.resolve();
     sessionId.current = id;
     verdictRef.current = vs;
+    stored.current = new Map(vs.map(v => [`${v.fingerprint}|${v.procKey}`, v]));
     setSession(s); setCapRecs(recs); setAllVerdicts(vs); setRoutine(rs);
     setCaptures(new Map()); setActiveFp(null); setView('triage'); setSelected(null); setSelectedItem(null); setFocus(null); setTriageFilters(DEFAULT_FILTERS); setProgress(null); setLoadError(null);
   }, [store, report]);
@@ -293,6 +311,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     setFocus(f => ({ id, n: (f?.n ?? 0) + 1 }));
     setView('tree');
   }, []);
+  const setExportOpts = useCallback((patch: Partial<{ includeEnv: boolean; redactArgs: boolean }>) => { setExportOptsState(o => ({ ...o, ...patch })); }, []);
   const updateTriageFilters = useCallback((patch: Partial<TriageFilters>) => { setTriageFilters(f => ({ ...f, ...patch })); }, []);
 
   // Drop the least recently used captures once the loaded ones outgrow the budget. This is an effect, not part of the
@@ -342,17 +361,23 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     // Synchronous, so a second call in the same tick sees this verdict (and its note); undone if the write fails.
     verdictRef.current = [...verdictRef.current.filter(x => !same(x)), v];
     const open = () => sessionId.current === s.id;
+    const key = `${fp}|${procId}`;
     try {
-      const done = writes.current.then(() => store.setVerdict(v));
+      const done = writes.current.then(() => settleWithin(store.setVerdict(v), WRITE_TIMEOUT_MS));
       writes.current = done.catch(() => { /* reported below, by the call that made it */ });
       await done;
+      if (open()) stored.current.set(key, v);
     } catch (e) {
       if (open()) {
+        // Back to what the store holds, not to the previous in-memory verdict: that one may itself never have been saved.
+        // A later write built on this one (still queued) is the current verdict and answers for itself when it settles.
         if (verdictRef.current.includes(v)) {
-          verdictRef.current = [...verdictRef.current.filter(x => x !== v), ...(prev ? [prev] : [])];
+          const last = stored.current.get(key);
+          verdictRef.current = [...verdictRef.current.filter(x => x !== v), ...(last ? [last] : [])];
           setAllVerdicts(verdictRef.current);
         }
-        report('Could not save the verdict', e);
+        if (e instanceof WriteTimeout) setStoreError('Could not save the verdict (the store is not responding)');
+        else report('Could not save the verdict', e);
       }
       return;
     }
@@ -410,7 +435,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
   const value: SessionCtx = {
     store, sessions, sessionsLoaded, captureCounts, persisted, storeError, dismissStoreError, createSession, renameSession, deleteSession, importSessionFile,
     session, capRecs, captures, active, capture, view, allVerdicts, verdicts, routine, routineKeys, triage,
-    selected, selectedItem, focusId: focus?.id ?? null, focusNonce: focus?.n ?? 0, triageFilters, updateTriageFilters, progress, loadError, openSession, closeSession, loadFiles, setActive, setView,
+    selected, selectedItem, focusId: focus?.id ?? null, focusNonce: focus?.n ?? 0, triageFilters, updateTriageFilters, progress, loadError, exportOpts, setExportOpts, openSession, closeSession, loadFiles, setActive, setView,
     setVerdict, toggleVerdict, setNote, addRoutine, removeRoutine, selectProc, selectItem, showInTree,
   };
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

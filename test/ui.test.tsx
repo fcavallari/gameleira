@@ -15,6 +15,7 @@ import type { CaptureModel, Image, Process } from '../src/model/types';
 import { basename, latestImage } from '../src/model/util';
 import { forestOf, flatten, keepSet, makeFoldInfo, revealKeys } from '../src/ui/tree-model';
 import { ErrorBoundary } from '../src/ui/ErrorBoundary';
+import { LaunchItem } from '../src/ui/LaunchItem';
 import { App, SessionContext, SessionProvider, useSession, type SessionCtx } from '../src/ui/App';
 import { SessionScreen } from '../src/ui/SessionScreen';
 import { TreeView } from '../src/ui/TreeView';
@@ -283,7 +284,7 @@ test('an error in a screen shows a reload message and leaves stored sessions alo
   vi.spyOn(console, 'error').mockImplementation(() => undefined);   // React logs the caught error
   const reload = vi.fn();
   render(<ErrorBoundary onReload={reload}><Boom /></ErrorBoundary>);
-  expect(screen.getByRole('alert')).toHaveTextContent('Something went wrong — reload. Your sessions are saved.');
+  expect(screen.getByRole('alert')).toHaveTextContent('Something went wrong — reload. Your saved sessions are kept in this browser. A change you made in the last few seconds may not have been saved.');
   await user.click(screen.getByRole('button', { name: 'Reload' }));
   expect(reload).toHaveBeenCalledTimes(1);
   expect((await store.listSessions()).map(x => x.name)).toEqual(['keep me']);
@@ -295,7 +296,7 @@ test('App shows the boundary instead of a blank page when a screen throws', asyn
   const store = new Proxy(real, { get: (t, k: string) => (k === 'listSessions' ? () => Promise.resolve([{ id: 'x', name: { not: 'text' }, created: 't', updated: 't' }]) : t[k as keyof Store]) });
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
   render(<App store={store as Store} />);
-  expect(await screen.findByRole('alert')).toHaveTextContent(/Something went wrong — reload\. Your sessions are saved\./);
+  expect(await screen.findByRole('alert')).toHaveTextContent(/Something went wrong — reload\. Your saved sessions are kept in this browser\. A change you made in the last few seconds may not have been saved\./);
   expect(screen.getByRole('button', { name: 'Reload' })).toBeInTheDocument();
 });
 
@@ -931,6 +932,162 @@ test('a launch item with no captured app, instigator, creator or emitter says so
   expect(field('Registered by')).toHaveTextContent('no captured process');
   expect(field('Finding on')).toHaveTextContent('no process: this item stands alone');
   expect(pane().queryByText('Reported by', { selector: 'dt' })).not.toBeInTheDocument();
+});
+
+/** LaunchItem on its own, for cases a whole capture would only get in the way of. */
+const renderItem = (model: CaptureModel, item: ReturnType<typeof persistenceItem>): void => {
+  render(<LaunchItem cap={{ model } as unknown as LoadedCapture} item={item} current={null} onSelect={() => undefined} />);
+};
+const row = (label: string): HTMLElement => screen.getByText(label, { selector: 'dt' }).nextElementSibling as HTMLElement;
+
+test('a login item that is a helper app inside the app bundle: two differently labelled rows, unique keys, Runs names the helper', () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  const helper = '/Applications/Foo.app/Contents/Library/LoginItems/Helper.app';
+  renderItem(capture([]), persistenceItem({ id: 'btm:1', itemType: 2, plistPath: `${helper}/`, appPath: '/Applications/Foo.app/', emitter: 'ghost:1' }));
+  expect(screen.getAllByText('App', { selector: 'dt' })).toHaveLength(1);
+  expect(row('App')).toHaveTextContent('/Applications/Foo.app/');
+  expect(row('Login item app')).toHaveTextContent(helper);
+  expect(row('Runs')).toHaveTextContent(helper);
+  expect(row('Runs')).not.toHaveTextContent('the app itself');
+  expect(errors).not.toHaveBeenCalled();   // no "same key" warning
+});
+
+test('"Registered by" glosses an instigator that is an Apple system messenger, not a plist writer or a tool', () => {
+  const smd = proc('1:1', [apple('/usr/libexec/smd', ['smd'])]);
+  const sh = proc('2:1', [apple('/bin/sh', ['sh', '-c', 'x'])]);
+  const launchctl = proc('3:1', [apple('/bin/launchctl', ['launchctl'])]);
+  const m = capture([smd, sh, launchctl]);
+  const base = { itemType: 3, plistPath: '/Users/a/Library/LaunchAgents/x.plist', emitter: 'ghost:1' };
+  const gloss = /may only be relaying/;
+  renderItem(m, persistenceItem({ ...base, instigator: '1:1' }));
+  expect(row('Registered by')).toHaveTextContent(gloss);
+  cleanup();
+  renderItem(m, persistenceItem({ ...base, creator: '2:1' }));   // sh wrote the plist: a real finding, no excuse offered
+  expect(row('Registered by')).toHaveTextContent('sh (plist writer)');
+  expect(row('Registered by')).not.toHaveTextContent(gloss);
+  cleanup();
+  renderItem(m, persistenceItem({ ...base, instigator: '3:1' }));   // an Apple tool in /bin is not a system messenger
+  expect(row('Registered by')).not.toHaveTextContent(gloss);
+});
+
+// --- failed and stuck verdict writes ----------------------------------------------------------------------------------
+
+/** A store whose verdict writes follow a script: 'fail' rejects, 'ok' stores, 'hang' never settles. The first one waits for `release()`. */
+async function scriptedStore(script: ('ok' | 'fail' | 'hang')[]): Promise<{ store: Store; real: Store; release(): void }> {
+  const real = await openStore();
+  let release!: () => void;
+  const gate = new Promise<void>(r => { release = r; });
+  let n = 0;
+  const store = new Proxy(real, {
+    get: (t, k: string) => (k === 'setVerdict'
+      ? async (v: Verdict) => {
+        const i = n++;
+        if (i === 0) await gate;
+        const what = script[i] ?? 'ok';
+        if (what === 'hang') return new Promise<void>(() => undefined);
+        if (what === 'fail') throw new Error(`disk full ${i}`);
+        return t.setVerdict(v);
+      }
+      : t[k as keyof Store]),
+  });
+  return { store, real, release };
+}
+
+test('write A fails then write B fails: nothing unsaved stays on screen, and the next press starts from the stored state', async () => {
+  const { store, real, release } = await scriptedStore(['fail', 'fail', 'ok']);
+  const sid = await openWith(store);
+  await drop('shlayer.json');
+  const id = firstProc();
+  await act(async () => {
+    const a = ctx.toggleVerdict(id, 'confirmed');
+    const b = ctx.setNote(id, 'maybe', ctx.active!);
+    release();
+    await Promise.all([a, b]);
+  });
+  expect(ctx.verdicts.size).toBe(0);
+  expect(await real.listVerdicts(sid)).toHaveLength(0);
+  await act(async () => { await ctx.toggleVerdict(id, 'confirmed'); });   // would read "confirmed" and flip to unreviewed if A's unsaved verdict lingered
+  expect(ctx.verdicts.get(id)?.status).toBe('confirmed');
+  expect(await real.listVerdicts(sid)).toMatchObject([{ status: 'confirmed' }]);
+}, 60_000);
+
+test('write A fails then write B succeeds: B, built on A, is what is stored and shown', async () => {
+  const { store, real, release } = await scriptedStore(['fail', 'ok']);
+  const sid = await openWith(store);
+  await drop('shlayer.json');
+  const id = firstProc();
+  await act(async () => {
+    const a = ctx.toggleVerdict(id, 'confirmed');
+    const b = ctx.setNote(id, 'n', ctx.active!);
+    release();
+    await Promise.all([a, b]);
+  });
+  expect(await real.listVerdicts(sid)).toMatchObject([{ status: 'confirmed', note: 'n' }]);
+  expect(ctx.verdicts.get(id)).toMatchObject({ status: 'confirmed', note: 'n' });
+}, 60_000);
+
+test('write A succeeds then write B fails: the screen goes back to A, which is what the store holds', async () => {
+  const { store, real, release } = await scriptedStore(['ok', 'fail']);
+  const sid = await openWith(store);
+  await drop('shlayer.json');
+  const id = firstProc();
+  await act(async () => {
+    const a = ctx.toggleVerdict(id, 'confirmed');
+    const b = ctx.setNote(id, 'lost', ctx.active!);
+    release();
+    await Promise.all([a, b]);
+  });
+  expect(await real.listVerdicts(sid)).toMatchObject([{ status: 'confirmed', note: '' }]);
+  expect(ctx.verdicts.get(id)).toMatchObject({ status: 'confirmed', note: '' });
+}, 60_000);
+
+test('a write that never settles is reported after 10 s, rolled back, and does not block the next write', async () => {
+  const { store, real, release } = await scriptedStore(['hang', 'ok']);
+  const sid = await openWith(store);
+  await drop('shlayer.json');
+  const id = firstProc();
+  release();   // the gate only matters for the first call; it hangs after it
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    let first!: Promise<void>;
+    act(() => { first = ctx.toggleVerdict(id, 'confirmed'); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(9_900); });
+    expect(ctx.storeError).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); await first; });
+    expect(ctx.storeError).toBe('Could not save the verdict (the store is not responding)');
+    expect(ctx.verdicts.size).toBe(0);   // rolled back to what was last stored: nothing
+    await act(async () => { await ctx.toggleVerdict(id, 'benign'); });   // the queue is free again
+    expect(ctx.verdicts.get(id)?.status).toBe('benign');
+    expect(await real.listVerdicts(sid)).toMatchObject([{ status: 'benign' }]);
+  } finally { vi.useRealTimers(); }
+}, 60_000);
+
+// --- the Confirmed tab's export choices ------------------------------------------------------------------------------
+
+test('the export choices survive a trip to another tab, and the tab says how many details are left out', async () => {
+  const store = await openStore();
+  const s = await store.createSession('lab');
+  await store.upsertCapture({ sessionId: s.id, fingerprint: 'fpA', fileName: 'monday.jsonl', size: 1, events: 1, processes: 1, flagged: 0, added: 't' });
+  await store.setVerdict(seedVerdict(s.id, 'fpA', 'p1', 'confirmed', 'a'));
+  await store.setVerdict(seedVerdict(s.id, 'fpA', 'p2', 'confirmed', 'b'));
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: 'lab' }));
+  await user.click(await screen.findByRole('tab', { name: 'Confirmed' }));
+  expect(screen.getByText(/Details for 2 confirmed processes are left out because their captures aren.t loaded; re-add them to include/)).toBeInTheDocument();
+  await user.click(screen.getByLabelText(/redact command-line arguments/i));
+  await user.click(screen.getByLabelText(/include environment variables/i));
+  await user.click(screen.getByRole('tab', { name: 'Triage' }));
+  await user.click(screen.getByRole('tab', { name: 'Confirmed' }));
+  expect(screen.getByLabelText(/redact command-line arguments/i)).toBeChecked();
+  expect(screen.getByLabelText(/include environment variables/i)).toBeChecked();
+});
+
+test('no "left out" notice when every confirmed process has its capture loaded', async () => {
+  await openWith(await openStore());
+  await drop('shlayer.json');
+  await act(async () => { await ctx.setVerdict(firstProc(), 'confirmed'); });
+  await user.click(screen.getByRole('tab', { name: 'Confirmed' }));
+  expect(screen.queryByText(/are left out because/)).not.toBeInTheDocument();
 });
 
 test('a login item whose URL is the app bundle is labelled App, not Plist, and names its app as the registrant', async () => {

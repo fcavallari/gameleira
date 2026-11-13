@@ -27,6 +27,7 @@ class Fnv64 {
 }
 
 const NEWLINE = 0x0a;
+const CR = 0x0d;
 const concat = (a: Uint8Array, b: Uint8Array): Uint8Array => {
   if (a.length === 0) return b;
   const out = new Uint8Array(a.length + b.length);
@@ -58,8 +59,9 @@ export async function fingerprint(
     off = end;
     let start = 0;
     for (let nl = pending.indexOf(NEWLINE, start); nl !== -1 && lines < HEAD_LINES; nl = pending.indexOf(NEWLINE, start)) {
-      if (nl > start) {   // empty lines are not lines (the loader skips them too)
-        hash.add(pending.subarray(start, nl));
+      const end = nl > start && pending[nl - 1] === CR ? nl - 1 : nl;   // CRLF and LF files are the same capture
+      if (end > start) {   // empty lines are not lines (the loader skips them too)
+        hash.add(pending.subarray(start, end));
         hash.add(Uint8Array.of(NEWLINE));
         lines++;
       }
