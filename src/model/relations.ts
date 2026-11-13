@@ -21,6 +21,19 @@ function tokenPidversion(token: TokenKey): number {
   return Number(token.split(':')[1]);
 }
 
+/** start_time in ms; NaN when absent or unparseable. */
+function startMs(p: Process): number {
+  return p.startTime === null ? NaN : Date.parse(p.startTime);
+}
+
+/** False when cand started after child, so it cannot be child's parent (PID reuse). Unknown times pass;
+ *  pid 1 always passes, since launchd's start_time can be later than its children's (v6 captures). */
+function couldPrecede(cand: Process, child: Process): boolean {
+  if (cand.pid === 1) return true;
+  const c = startMs(cand), k = startMs(child);
+  return Number.isNaN(c) || Number.isNaN(k) || c <= k;
+}
+
 /** Fills originalParent, currentParent and responsible on every process, creating ghosts
  *  for pre-capture references, then attributes each persistence item to the plist's creator. */
 export function resolveRelations(m: CaptureModel): void {
@@ -49,15 +62,20 @@ export function resolveRelations(m: CaptureModel): void {
     return best;
   };
 
+  /** The latest captured holder of pid seen by child's first event that did not start after child. */
+  const pidHolder = (pid: number, child: Process): Process | undefined =>
+    latestAtOrBefore(byPid.get(pid)?.filter(p => couldPrecede(p, child)), child.firstSeq);
+
   const adopt = (g: Process, child: Process): ProcId => {
     if (child.firstSeq < g.firstSeq) g.firstSeq = child.firstSeq;
     return g.id;
   };
 
   /** The captured process an unregistered token belongs to: one inside its exec chain, or
-   *  pre-capture history of a process that started before the capture. Not a PID-reuse predecessor. */
+   *  pre-capture history of a process that started before the capture. Not a PID-reuse predecessor,
+   *  nor a process that started after child. */
   const owner = (token: TokenKey, pid: number, child: Process): Process | undefined => {
-    const cand = latestAtOrBefore(byPid.get(pid), child.firstSeq);
+    const cand = pidHolder(pid, child);
     const r = cand && pvRange.get(cand.id);
     if (!cand || !r) return undefined;
     const pv = tokenPidversion(token);
@@ -94,7 +112,7 @@ export function resolveRelations(m: CaptureModel): void {
   const byPidRef = (pid: number | null, child: Process): ProcId | null => {
     if (pid === null || pid === 0) return null;
     let id: ProcId;
-    const real = latestAtOrBefore(byPid.get(pid), child.firstSeq);
+    const real = pidHolder(pid, child);
     if (real) {
       id = real.id;
     } else {

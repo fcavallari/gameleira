@@ -2,6 +2,7 @@ import { expect, test } from 'vitest';
 import { ancestry, childrenIndex, displayName, resolveRelations, type ParentMode } from '../src/model/relations';
 import type { CaptureModel, Process } from '../src/model/types';
 import { model, procByPid } from './helpers';
+import type { FixtureName } from './fixtures';
 
 const m = model('es-lab.jsonl');
 
@@ -91,4 +92,64 @@ test('PID reuse: unseen older token of an in-capture fork child stays a ghost', 
   const parent = h.processes.get(h.processes.get('200:1')!.currentParent!)!;
   expect(parent.id).toBe('100:1');
   expect(parent.ghost).toBe(true);
+});
+
+// ---- PID reuse against start times ----
+
+const DAEMON_START = '2025-12-01T09:00:00.000000Z';
+const IN_CAPTURE = '2026-01-01T10:00:00.123456Z';
+
+test('PID reuse: a pre-capture daemon is not parented to a later process that reused its parent pid', () => {
+  const h = handBuilt(
+    proc('1:1', 1, { startTime: IN_CAPTURE }),                    // launchd with an odd start time: exempt
+    proc('500:7', 2, { startTime: IN_CAPTURE, forkParent: '1:1' }), // osascript born during the capture
+    proc('300:1', 3, { startTime: DAEMON_START, originalPpid: 500, ppid: 1 }),
+  );
+  const d = h.processes.get('300:1')!;
+  const orig = h.processes.get(d.originalParent!)!;
+  expect(orig.ghost).toBe(true);
+  expect(orig.pid).toBe(500);
+  expect(d.currentParent).toBe('1:1');
+});
+test('PID reuse: an unseen parent token is not owned by a later-started process with that pid', () => {
+  const h = handBuilt(
+    proc('500:7', 2, { startTime: IN_CAPTURE }),
+    proc('300:1', 3, { startTime: DAEMON_START, originalPpid: 500, ppid: 500, parentToken: '500:3' }),
+  );
+  const d = h.processes.get('300:1')!;
+  expect(d.currentParent).toBe('500:3');
+  expect(h.processes.get('500:3')!.ghost).toBe(true);
+  expect(d.originalParent).toBe('500:3');
+});
+test('PID reuse: the latest earlier-started holder of the pid is still the parent', () => {
+  const h = handBuilt(
+    proc('500:2', 1, { startTime: '2025-11-01T00:00:00Z' }),
+    proc('500:7', 2, { startTime: IN_CAPTURE }),
+    proc('300:1', 3, { startTime: DAEMON_START, originalPpid: 500, ppid: 500, parentToken: '500:1' }),
+  );
+  const d = h.processes.get('300:1')!;
+  expect(d.originalParent).toBe('500:2');
+  expect(d.currentParent).toBe('500:2');
+  expect(h.tokenIndex.get('500:1')).toBe('500:2');
+});
+test('fixtures: no resolved parent other than launchd started after its child; ghost counts unchanged', () => {
+  const ghosts: Record<FixtureName, number> = {
+    'es-lab.jsonl': 6, 'atomic_stealer.json': 3, 'rustbucket.json': 0, 'shlayer.json': 2, 'spritetree_demo.json': 0,
+  };
+  for (const [name, n] of Object.entries(ghosts) as [FixtureName, number][]) {
+    const fm = model(name);
+    expect([...fm.processes.values()].filter(p => p.ghost), name).toHaveLength(n);
+    for (const p of fm.processes.values()) {
+      for (const id of [p.originalParent, p.currentParent]) {
+        const par = id === null ? undefined : fm.processes.get(id);
+        if (!par || par.pid === 1 || !par.startTime || !p.startTime) continue;
+        expect(Date.parse(par.startTime) <= Date.parse(p.startTime), `${name} ${p.id} <- ${par.id}`).toBe(true);
+      }
+    }
+  }
+  // v6: launchd's start time is later than its pre-capture children's, and it stays their parent.
+  const v6 = model('atomic_stealer.json');
+  const nehelper = procByPid(v6, 215);
+  expect(v6.processes.get(nehelper.originalParent!)!.pid).toBe(1);
+  expect(v6.processes.get(nehelper.currentParent!)!.ghost).toBe(false);
 });
