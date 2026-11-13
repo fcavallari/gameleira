@@ -6,7 +6,8 @@ import type { Image, ProcId } from '../model/types';
 import { basename, latestImage } from '../model/util';
 import { SEVERITY_RANK, type Severity } from '../rules/rules';
 import type { QueueItem } from '../rules/engine';
-import { importSession } from '../session/export';
+import { importSession, reimportSession, type SessionExport } from '../session/export';
+import { folderSupported, pickFolder, rememberedFolder, rememberFolder, type DirHandle } from '../session/folder';
 import { evictLru, MAX_LOADED_BYTES, touch } from '../session/lru';
 import { applyRoutine, isRiskyRoutine, NO_IDENTITY, programKey, routineImpact, type RoutineResult } from '../session/routine';
 import type { CaptureRec, RoutineRec, Session, Status, Store, Verdict } from '../session/store';
@@ -33,6 +34,12 @@ export interface SessionCtx {
   deleteSession(id: string): Promise<void>;
   /** Parses a session export file and imports it as a NEW session. Rejects with a readable message. */
   importSessionFile(file: File): Promise<Session>;
+  /** Swaps session `id`'s captures, verdicts, notes and routine marks for the file's; it keeps its name. Rejects with a readable message. */
+  reimportSession(id: string, data: SessionExport): Promise<void>;
+  /** The folder Save session writes into and opening a session looks in. Null until one is chosen, and where the browser cannot. */
+  saveFolder: DirHandle | null;
+  /** Asks for a folder and remembers it. Resolves null when the picker was closed. */
+  chooseSaveFolder(): Promise<DirHandle | null>;
   // the open session
   session: Session | null;
   /** Every capture recorded for the session, loaded or not. */
@@ -136,6 +143,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
   const [progress, setProgress] = useState<Progress | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [exportOpts, setExportOptsState] = useState({ includeEnv: false, redactArgs: false });
+  const [saveFolder, setSaveFolder] = useState<DirHandle | null>(null);
 
   // Synchronous mirrors: async actions must see the session that is open NOW, not the one they were created in.
   const sessionId = useRef<string | null>(null);
@@ -169,6 +177,22 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
   }, []);
 
   useEffect(() => { void refreshSessions(); void refreshPersisted(); }, [refreshSessions, refreshPersisted]);
+
+  useEffect(() => {
+    if (!folderSupported()) return;
+    let live = true;
+    // Best-effort: without the remembered folder the next save asks for one.
+    rememberedFolder().then(d => { if (live && d) setSaveFolder(prev => prev ?? d); }, () => { /* see above */ });
+    return () => { live = false; };
+  }, []);
+
+  const chooseSaveFolder = useCallback(async () => {
+    const d = await pickFolder();
+    if (!d) return null;
+    setSaveFolder(d);
+    try { await rememberFolder(d); } catch { /* it is still used until the tab closes */ }
+    return d;
+  }, []);
 
   const createSession = useCallback(async (name: string) => {
     let s: Session;
@@ -239,6 +263,11 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
     const s = await importSession(store, data as Parameters<typeof importSession>[1]);
     await refreshSessions();
     return s;
+  }, [store, refreshSessions]);
+
+  const reimport = useCallback(async (id: string, data: SessionExport) => {
+    await reimportSession(store, id, data);
+    await refreshSessions();
   }, [store, refreshSessions]);
 
   /** `g` is the session generation the load started under; every state or store write re-checks it. */
@@ -434,6 +463,7 @@ export function SessionProvider({ store, maxLoadedBytes = MAX_LOADED_BYTES, chil
 
   const value: SessionCtx = {
     store, sessions, sessionsLoaded, captureCounts, persisted, storeError, dismissStoreError, createSession, renameSession, deleteSession, importSessionFile,
+    reimportSession: reimport, saveFolder, chooseSaveFolder,
     session, capRecs, captures, active, capture, view, allVerdicts, verdicts, routine, routineKeys, triage,
     selected, selectedItem, focusId: focus?.id ?? null, focusNonce: focus?.n ?? 0, triageFilters, updateTriageFilters, progress, loadError, exportOpts, setExportOpts, openSession, closeSession, loadFiles, setActive, setView,
     setVerdict, toggleVerdict, setNote, addRoutine, removeRoutine, selectProc, selectItem, showInTree,

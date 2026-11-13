@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import { exportSession } from '../session/export';
+import { exportSession, saveFileName } from '../session/export';
+import { folderSupported, permitted, writeFile } from '../session/folder';
 import { useSession } from './session-context';
-
-const slug = (s: string): string => s.replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '') || 'session';
 
 /** File input that imports a session export as a new session. */
 export function ImportSession() {
@@ -29,33 +28,77 @@ export function ImportSession() {
   );
 }
 
-/** Downloads the open session as a JSON file, with the export options chosen on the Confirmed tab. */
-export function useSaveSession(): { save(): Promise<void>; error: string | null } {
+export interface SaveSession {
+  save(): Promise<void>;
+  /** Picks another folder for later saves (folder saving only). */
+  changeFolder(): Promise<void>;
+  error: string | null;
+  /** What the last save or folder change did, for a status line. */
+  done: string | null;
+}
+
+/**
+ * Saves the open session as a JSON file, with the export options chosen on the Confirmed tab. Where the browser can
+ * write into a folder (Chromium), the file goes into the remembered folder, asking for one the first time, and replaces
+ * the previous save of this session there; opening the session from the home page later looks in that folder.
+ * Elsewhere the file is downloaded. Either way it is named `<name>.<id hash>.gameleira-session.json`.
+ */
+export function useSaveSession(): SaveSession {
   const c = useSession();
   const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
   const session = c.session!;
+  const fail = (e: unknown) => { setError(e instanceof Error ? e.message : String(e)); };
+
   const save = async () => {
-    setError(null);
+    setError(null); setDone(null);
+    const name = saveFileName(session);
     try {
+      if (folderSupported()) {
+        // Permission first: the browser only asks while it is handling the click.
+        let dir = c.saveFolder && await permitted(c.saveFolder, 'readwrite', true) ? c.saveFolder : null;
+        dir ??= await c.chooseSaveFolder();
+        if (!dir) return;   // picker closed: nothing saved, nothing to report
+        const data = await exportSession(c.store, session.id, c.exportOpts, c.captures);
+        await writeFile(dir, name, JSON.stringify(data, null, 2));
+        setDone(`Saved ${name} in “${dir.name}”.`);
+        return;
+      }
       const data = await exportSession(c.store, session.id, c.exportOpts, c.captures);
       const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${slug(session.name)}.gameleira-session.json`;
+      a.download = name;
       document.body.appendChild(a);
       a.click();
       a.remove();
       setTimeout(() => { URL.revokeObjectURL(url); }, 1000);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
+    } catch (e) { fail(e); }
   };
-  return { save, error };
+
+  const changeFolder = async () => {
+    setError(null); setDone(null);
+    try {
+      const dir = await c.chooseSaveFolder();
+      if (dir) setDone(`Sessions will be saved in “${dir.name}”.`);
+    } catch (e) { fail(e); }
+  };
+  return { save, changeFolder, error, done };
+}
+
+/** Where Save session puts the file, with a way to change it: only where the browser saves into a folder. */
+export function SaveFolderNote({ s }: { s: SaveSession }) {
+  const c = useSession();
+  if (!folderSupported()) return null;
+  return c.saveFolder
+    ? <>Saves into “{c.saveFolder.name}”. <button className="link" onClick={() => { void s.changeFolder(); }}>Change folder</button></>
+    : <>The first save asks for a folder; opening a session later looks there for a newer copy.</>;
 }
 
 export function ConfirmedTab() {
   const c = useSession();
-  const { save: doExport, error } = useSaveSession();
+  const saver = useSaveSession();
+  const { save: doExport, error } = saver;
   const { includeEnv, redactArgs } = c.exportOpts;
   const fileName = (fp: string): string => c.capRecs.find(r => r.fingerprint === fp)?.fileName ?? 'unknown capture';
   const confirmed = c.allVerdicts
@@ -98,6 +141,8 @@ export function ConfirmedTab() {
           <label className="inline"><input type="checkbox" checked={includeEnv} onChange={e => { c.setExportOpts({ includeEnv: e.target.checked }); }} /> Include environment variables</label>
         </div>
         <div><button className="primary" onClick={() => { void doExport(); }}>Export session</button></div>
+        {folderSupported() && <p className="muted small"><SaveFolderNote s={saver} /></p>}
+        {saver.done && <p role="status" className="small">{saver.done}</p>}
         <p className="muted small">
           The export includes the full command line of every verdict, and those can contain secrets such as passwords
           (for example <code>dscl . -authonly user password</code>). Tick “Redact command-line arguments” to replace every argument

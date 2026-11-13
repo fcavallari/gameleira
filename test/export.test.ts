@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import { beforeEach, expect, test } from 'vitest';
 import type { LoadedCapture } from '../src/ingest/load';
-import { exportSession, importSession } from '../src/session/export';
+import { diffExport, exportSession, idHash, importSession, parseExport, reimportSession, saveFileName } from '../src/session/export';
 import { openStore, type Session, type Store } from '../src/session/store';
 import { procByPid, queued } from './helpers';
 
@@ -185,4 +185,47 @@ test('redacting leaves the stored verdict alone', async () => {
   const { out } = await atomicExport({ includeEnv: false, redactArgs: true });
   const stored = (await store.listVerdicts(out.session.id))[0]!;
   expect(stored.snapshot.args).toContain('labpass-not-real');
+});
+
+
+// --- saved files and reimport ------------------------------------------------------------------------------------
+
+test('a saved file is named after the session plus a hash of its id, so two sessions with one name do not collide', () => {
+  expect(saveFileName({ id: 'abc', name: 'finance MacBook / 12 Nov' })).toMatch(/^finance-MacBook-12-Nov\.[0-9a-f]{8}\.gameleira-session\.json$/);
+  expect(idHash('abc')).toBe(idHash('abc'));
+  expect(idHash('abc')).not.toBe(idHash('abd'));
+  expect(saveFileName({ id: 'a', name: 'lab' })).not.toBe(saveFileName({ id: 'b', name: 'lab' }));
+});
+
+test('diffExport: a file saved from this session is the same, even with redacted arguments; a changed note is not', async () => {
+  const rows = async () => [await store.listCaptures(s.id), await store.listVerdicts(s.id), await store.listRoutine(s.id)] as const;
+  const out = await exportSession(store, s.id, { includeEnv: false, redactArgs: true }, loaded);
+  expect(diffExport(out, ...await rows()).same).toBe(true);
+
+  const edited = { ...out, verdicts: out.verdicts.map((v, i) => (i === 0 ? { ...v, note: 'changed' } : v)) };
+  const d = diffExport(edited, ...await rows());
+  expect(d.same).toBe(false);
+  expect(d.file).toEqual({ reviewed: 2, routine: 1 });
+  expect(d.stored).toEqual({ reviewed: 2, routine: 1 });
+  expect(diffExport({ ...out, routine: [] }, ...await rows()).same).toBe(false);
+});
+
+test('reimportSession replaces the session’s rows with the file’s and keeps its name; a bad file changes nothing', async () => {
+  const out = await exportSession(store, s.id, { includeEnv: false });
+  const edited = { ...out, verdicts: [{ ...out.verdicts[0]!, status: 'benign' as const }], routine: [] };
+  const t = await store.createSession('other');
+  await reimportSession(store, t.id, edited);
+  expect((await store.listVerdicts(t.id)).map(v => v.status)).toEqual(['benign']);
+  expect(await store.listRoutine(t.id)).toEqual([]);
+  expect((await store.listSessions()).find(x => x.id === t.id)!.name).toBe('other');
+
+  await expect(reimportSession(store, t.id, { ...out, verdicts: 5 } as never)).rejects.toThrow(/"verdicts" must be an array/);
+  expect((await store.listVerdicts(t.id)).map(v => v.status)).toEqual(['benign']);
+});
+
+test('parseExport reads a saved file and rejects anything else', async () => {
+  const out = await exportSession(store, s.id, { includeEnv: false });
+  expect(parseExport(JSON.stringify(out)).session.id).toBe(s.id);
+  expect(() => parseExport('{')).toThrow('Not a JSON file');
+  expect(() => parseExport('{"format":"x"}')).toThrow(/not a Gameleira session export/);
 });

@@ -1,6 +1,6 @@
 import { useRef, useState, type DragEvent } from 'react';
 import { Mark, Wordmark } from './Brand';
-import { ConfirmedTab, useSaveSession } from './ConfirmedTab';
+import { ConfirmedTab, SaveFolderNote, useSaveSession } from './ConfirmedTab';
 import { StoreErrorBanner } from './StoreErrorBanner';
 import { TreeView } from './TreeView';
 import { TriageView } from './TriageView';
@@ -139,7 +139,8 @@ export function SessionScreen() {
   const [over, setOver] = useState(false);
   // dragenter and dragleave fire for every element the pointer crosses: the drag has left only when they balance.
   const depth = useRef(0);
-  const { save, error: saveError } = useSaveSession();
+  const saver = useSaveSession();
+  const { save, error: saveError } = saver;
   const bigDrop = !c.capture && c.view !== 'confirmed';
   // The Confirmed tab imports sessions, so a file dropped there is not taken for a capture: only its own control takes it.
   const takesCaptures = c.view !== 'confirmed';
@@ -197,7 +198,7 @@ export function SessionScreen() {
           {/* The Confirmed tab has the same download as "Export session", next to its options. */}
           {c.view !== 'confirmed' && (
             <button onClick={() => { void save(); }}
-              title="Download this session (verdicts, notes, routine marks) as a JSON file. Redaction options are on the Confirmed tab.">Save session</button>
+              title="Save this session (verdicts, notes, routine marks) as a JSON file. Redaction options are on the Confirmed tab.">Save session</button>
           )}
         </div>
         {c.view !== 'confirmed' && (
@@ -206,8 +207,10 @@ export function SessionScreen() {
               ? 'Save session redacts command-line arguments.'
               : <><span className="warn">Save session includes full command lines, which can hold secrets such as passwords.</span> Redact them on
                 the <button className="link" onClick={() => { c.setView('confirmed'); }}>Confirmed tab</button>.</>}
+            {' '}<SaveFolderNote s={saver} />
           </p>
         )}
+        {c.view !== 'confirmed' && saver.done && <p role="status" className="save-note small">{saver.done}</p>}
         {saveError && <p role="alert" className="error">{saveError}</p>}
         <Counts />
         <CaptureInfo />

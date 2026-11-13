@@ -119,3 +119,32 @@ test('the default database is named gameleira', async () => {
   await openStore();
   expect((await indexedDB.databases()).map(d => d.name)).toContain('gameleira');
 });
+
+test('replaceAll swaps a session’s rows in one go and keeps its id and name; other sessions are untouched', async () => {
+  const s = await store.createSession('lab');
+  const other = await store.createSession('other');
+  await store.upsertCapture(rec(s.id, 'old', 1));
+  await store.setVerdict(verdict(s.id, 'old', 'p1', 'confirmed'));
+  await store.addRoutine({ sessionId: s.id, programKey: 'old-k', label: 'l', added: 't' });
+  await store.setVerdict(verdict(other.id, 'old', 'p1', 'benign'));
+
+  await store.replaceAll(s.id, [rec('elsewhere', 'new', 2)], [verdict('elsewhere', 'new', 'p2', 'benign')],
+    [{ sessionId: 'elsewhere', programKey: 'new-k', label: 'l', added: 't' }]);
+
+  const after = (await store.listSessions()).find(x => x.id === s.id)!;
+  expect(after.name).toBe('lab');
+  expect(after.updated >= s.updated).toBe(true);
+  expect((await store.listCaptures(s.id)).map(c => [c.sessionId, c.fingerprint])).toEqual([[s.id, 'new']]);
+  expect((await store.listVerdicts(s.id)).map(v => [v.sessionId, v.procKey, v.status])).toEqual([[s.id, 'p2', 'benign']]);
+  expect((await store.listRoutine(s.id)).map(r => r.programKey)).toEqual(['new-k']);
+  expect((await store.listVerdicts(other.id)).map(v => v.status)).toEqual(['benign']);
+});
+
+test('replaceAll changes nothing when a write fails, or when the session does not exist', async () => {
+  const s = await store.createSession('lab');
+  await store.setVerdict(verdict(s.id, 'fp', 'p1', 'confirmed'));
+  const bad = { ...rec(s.id, 'x', 1), fingerprint: { x: 1 } as never };   // invalid key
+  await expect(store.replaceAll(s.id, [bad], [], [])).rejects.toThrow();
+  expect((await store.listVerdicts(s.id)).map(v => v.procKey)).toEqual(['p1']);
+  await expect(store.replaceAll('nope', [], [], [])).rejects.toThrow(/no such session/);
+});

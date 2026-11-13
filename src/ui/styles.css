@@ -179,6 +179,12 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 /* Open nodes are not sessions: the empty message, and the place a saved session is imported. */
 .stree .node.open { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 0; padding: 18px 12px; }
 .stree .node.open::before { background: var(--sheet); border: 2px solid var(--node); }
+.sessions .reimport { padding: 10px 0 4px; max-width: 72ch; }
+.sessions .reimport h3 { margin: 0 0 6px; font-size: 15px; }
+.sessions .reimport p { margin: 0 0 6px; }
+.sessions .reimport .mono { overflow-wrap: anywhere; }
+.sessions .reimport .acts { justify-content: flex-start; gap: 8px; margin-top: 10px; }
+.sessions .reimport .acts button { opacity: 1; }
 .stree .import { margin-top: 12px; }
 .stree .import h3 { margin: 0; font-size: 14px; }
 .stree .import p { margin: 2px 0 0; }
