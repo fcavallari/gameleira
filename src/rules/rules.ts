@@ -1,5 +1,5 @@
 import type { CaptureModel, Image, PersistenceItem, Process } from '../model/types';
-import { basename, latestImage, normPath } from '../model/util';
+import { basename, imageAt, normPath } from '../model/util';
 
 export type Severity = 'high' | 'med' | 'low';
 export const SEVERITY_RANK: Record<Severity, number> = { high: 3, med: 2, low: 1 };
@@ -91,9 +91,16 @@ const TOOLING_DIRS = new Set([
   '.build', '.terraform', '.next', '.cargo', '.gradle', '.m2', '.cache', '.npm', '.yarn', 'target', 'deriveddata',
 ]);
 
+/** The temporary, shared, download, volume or translocation place a path is in, if any. */
+function strongPlace(p: string): OddLocation | null {
+  for (const [re, kind] of STRONG_LOCATIONS) if (re.test(p)) return { strength: 'strong', kind };
+  return null;
+}
+
 export function oddLocation(path: string): OddLocation | null {
   const p = normPath(path);
-  for (const [re, kind] of STRONG_LOCATIONS) if (re.test(p)) return { strength: 'strong', kind };
+  const strong = strongPlace(p);
+  if (strong !== null) return strong;
   const home = HOME.exec(p);
   if (!home) return null;
   // Walk the folders below home, top down. A tooling folder only softens hidden folders found below it, so
@@ -120,15 +127,79 @@ export function hasShortFlag(args: string[], letter: string): boolean {
 /** Output targets that are not a file on disk: curl's `-o /dev/null` and `-o -` (stdout). */
 const NOT_A_FILE = new Set(['/dev/null', '-']);
 
-/** What the output flag (`-o` for curl, `-O` for wget, or `--output`) points at; undefined when the flag has no value. */
-function outputTargets(a: string[], letter: string): (string | undefined)[] {
+/**
+ * Values given to an option: `-x v`, `-xv`, a short cluster ending in x (`-sLo v`, `-qO-`), `--long v` or `--long=v`.
+ * undefined when the value is missing.
+ */
+function optionValues(a: string[], letter: string, longs: string[]): (string | undefined)[] {
   const out: (string | undefined)[] = [];
-  a.forEach((x, i) => {
-    if (x === '--output') out.push(a[i + 1]);
-    else if (x.startsWith('--output=')) out.push(x.slice('--output='.length));
-    else if (/^-[A-Za-z]+$/.test(x) && x.includes(letter)) out.push(a[i + 1]);
-  });
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const long = longs.find(l => x === l || x.startsWith(`${l}=`));
+    if (long !== undefined) {
+      out.push(x === long ? a[++i] : x.slice(long.length + 1));
+      continue;
+    }
+    if (x.startsWith('--') || !x.startsWith('-')) continue;
+    const k = x.indexOf(letter);
+    if (k > 0 && /^[A-Za-z]*$/.test(x.slice(1, k))) {
+      const attached = x.slice(k + 1);
+      out.push(attached !== '' ? attached : a[++i]);
+    }
+  }
   return out;
+}
+const isFileTarget = (t: string | undefined): boolean => t !== undefined && !NOT_A_FILE.has(t);
+
+/** Interpreters that read a script from stdin when given none, and the flags that mean the code is somewhere else. */
+interface PipeLang { mitre: string; inline: string; stdinFlag: string; valueOpts: string[]; attached: string }
+const PIPE_LANGS: [(n: string) => boolean, PipeLang][] = [
+  // -c: the command is an argument; -s: read commands from stdin (the rest are positional parameters); -o/+o take an option name.
+  [n => SHELL_NAMES.has(n), { mitre: 'T1059.004', inline: 'c', stdinFlag: 's', valueOpts: ['-o', '+o'], attached: '' }],
+  // -c code, -m module; -W and -X take a value.
+  [n => /^python[0-9.]*$/.test(n), { mitre: 'T1059.006', inline: 'cm', stdinFlag: '', valueOpts: ['-W', '-X'], attached: 'WX' }],
+  // -e/-E code (also in clusters such as -ne, -0777pe); -I, -M, -m, -x, -d carry their value attached.
+  [n => /^perl[0-9.]*$/.test(n), { mitre: 'T1059', inline: 'eE', stdinFlag: '', valueOpts: [], attached: 'IMmxd' }],
+  // -e code; -I, -r, -C, -E take a value.
+  [n => /^ruby[0-9.]*$/.test(n), { mitre: 'T1059', inline: 'e', stdinFlag: '', valueOpts: ['-I', '-r', '-C', '-E'], attached: 'IrCE' }],
+];
+
+/** The interpreter's language when it reads its program from stdin: no inline code, and no script file argument (or `-`). */
+function pipeLang(img: Image): PipeLang | null {
+  if (img.stdinIsPipe !== true || img.script !== null || !img.args) return null;
+  const lang = PIPE_LANGS.find(([is]) => is(basename(img.path)))?.[1];
+  if (!lang) return null;
+  const a = img.args;
+  for (let i = 1; i < a.length; i++) {
+    const x = a[i]!;
+    if (x === '-') return lang;
+    if (x === '--') return a[i + 1] === undefined ? lang : null;
+    if (x.startsWith('--')) continue;                                   // long option
+    if (x.length > 1 && (x.startsWith('-') || (lang.stdinFlag !== '' && x.startsWith('+')))) {
+      if (lang.valueOpts.includes(x)) { i++; continue; }
+      if (lang.attached.includes(x[1]!)) continue;
+      const letters = x.slice(1);
+      if ([...letters].some(ch => lang.inline.includes(ch))) return null;
+      if (lang.stdinFlag !== '' && letters.includes(lang.stdinFlag)) return lang;
+      continue;
+    }
+    return null;                                                       // a script file
+  }
+  return lang;
+}
+
+/** tar is in create mode: `--create`, a short cluster with c (`-czf`), or a bundled first arg (`czf`). */
+function tarCreates(a: string[]): boolean {
+  return a.some(x => x === '--create' || /^-[A-Za-z]*c[A-Za-z]*$/.test(x)) || /^[A-Za-z]*c[A-Za-z]*$/.test(a[0] ?? '');
+}
+
+/** Paths an archiver's arguments name: plain args, `--opt=/path`, `-C/path`, relative ones joined to the working directory. */
+function argPaths(a: string[], cwd: string | null): string[] {
+  return a.map(x => {
+    if (x.startsWith('--')) return x.includes('=') ? x.slice(x.indexOf('=') + 1) : null;
+    if (x.startsWith('-')) return x.includes('/') ? x.slice(x.indexOf('/')) : null;
+    return x;
+  }).filter((x): x is string => x !== null && x !== '').map(x => resolvePath(x, cwd));
 }
 
 const LAUNCH_DIR = /^(?:\/Users\/[^/]+\/Library\/LaunchAgents|\/Library\/Launch(?:Agents|Daemons))\//i;
@@ -196,11 +267,13 @@ function rest(img: Image): string[] {
 }
 
 const isAdhoc = (img: Image): boolean => (img.csFlags & 0x2) !== 0;
-const isUnsigned = (img: Image): boolean => !img.isPlatform && img.signingId === null;
+/** No signature at all; an empty signing ID counts as none. */
+const isUnsigned = (img: Image): boolean => !img.isPlatform && !img.signingId;
 
+/** The original parent's image when this process was born (the parent may exec something else later). */
 function originalParentImage(m: CaptureModel, p: Process): Image | undefined {
   const parent = p.originalParent !== null ? m.processes.get(p.originalParent) : undefined;
-  return parent ? latestImage(parent) : undefined;
+  return parent ? imageAt(parent, p.firstSeq) : undefined;
 }
 
 function trimSlash(p: string): string {
@@ -307,7 +380,7 @@ export const RULES: Rule[] = [
     explanation: 'Checks whether a password is correct for a local account. Stealers run it to verify a password the attacker just phished with a fake prompt.',
     mitre: ['T1056.002'], scope: 'image',
     match: ({ img }) =>
-      basename(img.path) === 'dscl' && rest(img).includes('-authonly') ? { evidence: cmdline(img) } : null,
+      basename(img.path) === 'dscl' && rest(img).some(a => a === '-authonly' || a === 'authonly') ? { evidence: cmdline(img) } : null,
   },
   {
     id: 'persistence-item', title: 'Launch item registered', severity: 'high',
@@ -385,18 +458,30 @@ export const RULES: Rule[] = [
     match: ({ img }) => {
       const n = basename(img.path);
       const a = rest(img);
-      if (n === 'openssl' && a.includes('enc') && a.includes('-d')) return { evidence: cmdline(img) };
+      // openssl options are single-dash words, never clusters: only `-d` itself means decode/decrypt (`-md`, `-days` do not).
+      // `openssl dgst -d` is the one command where -d means something else (debug output).
+      if (n === 'openssl' && a.includes('-d') && a[0] !== 'dgst') return { evidence: cmdline(img) };
       if (n === 'base64' && (hasShortFlag(a, 'd') || hasShortFlag(a, 'D') || a.includes('--decode'))) return { evidence: cmdline(img) };
       return null;
     },
   },
   {
-    id: 'shell-from-pipe', title: 'Shell reading commands from a pipe', severity: 'med',
-    explanation: "A shell ran commands piped into it (`curl … | bash` pattern), so there's no script file on disk to inspect.",
-    mitre: ['T1059.004'], scope: 'image',
-    match: ({ img }) =>
-      img.path !== null && SHELLS.has(img.path) && img.args?.length === 1 && img.stdinIsPipe === true && img.script === null
-        ? { evidence: `${cmdline(img)} with stdin from a pipe` } : null,
+    id: 'shell-from-pipe', title: 'Shell or interpreter reading commands from a pipe', severity: 'med',
+    explanation: "A shell, or python, perl or ruby, ran commands piped into it (the `curl … | bash` pattern), so there's no script file on disk to inspect.",
+    mitre: ['T1059.004', 'T1059.006', 'T1059'], scope: 'image',
+    match: ({ p, img, imgIndex }) => {
+      const lang = pipeLang(img);
+      if (lang === null) return null;
+      // Once per process: /bin/sh re-execs /bin/bash and perl re-execs perl5.30 with the same arguments.
+      if (p.images.slice(0, imgIndex).some(i => !i.inherited && i.path !== null && pipeLang(i) !== null)) return null;
+      const n = basename(img.path);
+      return {
+        evidence: `${cmdline(img)} with stdin from a pipe`, mitre: [lang.mitre],
+        explanation: SHELL_NAMES.has(n)
+          ? "A shell ran commands piped into it (the `curl … | bash` pattern), so there's no script file on disk to inspect."
+          : `${n} ran a script piped into it (the \`curl … | ${n}\` pattern), so there's no script file on disk to inspect.`,
+      };
+    },
   },
   {
     id: 'shell-under-app', title: 'App launched a shell', severity: 'med',
@@ -420,12 +505,17 @@ export const RULES: Rule[] = [
       const n = basename(img.path);
       if (n !== 'curl' && n !== 'wget') return null;
       const a = rest(img);
-      let toFile = hasShortFlag(a, 'o') || hasShortFlag(a, 'O') || a.some(x => x === '--output' || x.startsWith('--output='));
-      // `curl -o /dev/null` (or `-o -`) throws the body away: nothing was written to disk. curl's `-O` names the file after the URL.
-      const targets = outputTargets(a, n === 'curl' ? 'o' : 'O');
-      const remoteName = n === 'curl' && hasShortFlag(a, 'O');
-      if (targets.length > 0 && !remoteName && targets.every(t => t !== undefined && NOT_A_FILE.has(t))) toFile = false;
-      if (toFile) return { evidence: cmdline(img) };
+      if (n === 'wget') {
+        if (a.includes('--spider')) return null;   // only checks that the URL exists
+        // wget saves to a file named after the URL unless -O / --output-document says otherwise; its -o is the log file.
+        const targets = optionValues(a, 'O', ['--output-document']);
+        if (targets.length === 0) return { evidence: `${cmdline(img)}; wget saves to a file named after the URL by default` };
+        if (targets.some(isFileTarget)) return { evidence: cmdline(img) };
+      } else {
+        // curl writes to stdout unless -o / --output names a file (not /dev/null or -) or -O / --remote-name names it after the URL.
+        const remoteName = hasShortFlag(a, 'O') || a.includes('--remote-name') || a.includes('--remote-name-all');
+        if (remoteName || optionValues(a, 'o', ['--output']).some(isFileTarget)) return { evidence: cmdline(img) };
+      }
       const created = p.fileOps.find(op => op.kind === 'create');
       return created ? { evidence: `${cmdline(img)}; created ${created.path}` } : null;
     },
@@ -437,13 +527,15 @@ export const RULES: Rule[] = [
     match: ({ img }) => {
       const n = basename(img.path);
       const a = rest(img);
-      const first = a[0] ?? '';
-      const hit = (n === 'ditto' && hasShortFlag(a, 'c')) || n === 'zip'
-        // tar's first arg: `--create`, or a mode cluster such as `czf` / `-czf` (not long options like --exclude).
-        || (n === 'tar' && (first === '--create' || /^-?[A-Za-z]*c[A-Za-z]*$/.test(first)));
+      const hit = (n === 'ditto' && hasShortFlag(a, 'c')) || n === 'zip' || (n === 'tar' && tarCreates(a));
       if (!hit) return null;
-      const staged = a.some(x => x.startsWith('/') && oddLocation(x) !== null);
-      return { evidence: cmdline(img), severity: staged ? 'high' : 'med' };
+      // An argument may be the folder itself (`-C /tmp`), so it is also checked as a folder against the strong places.
+      const where = argPaths(a, img.cwd).map(x => oddLocation(x) ?? strongPlace(normPath(`${x}/`))).find(w => w !== null) ?? null;
+      if (where === null) return { evidence: cmdline(img), severity: 'med' };
+      return {
+        evidence: `${cmdline(img)} (staged in ${LOCATION_WORDS[where.kind].short})`, severity: 'high',
+        explanation: `Packed files into an archive, in or from ${LOCATION_WORDS[where.kind].long}. Stealers stage collected data this way before sending it out.`,
+      };
     },
   },
   {
@@ -490,7 +582,7 @@ export const RULES: Rule[] = [
     explanation: 'Ad-hoc signed: it carries a signature but no developer identity. Common for Homebrew and locally built tools, and for malware; a trait, not a technique by itself.',
     mitre: ['T1036'], scope: 'image',
     match: ({ img }) =>
-      !img.isPlatform && img.signingId !== null && isAdhoc(img)
+      !img.isPlatform && !!img.signingId && isAdhoc(img)
         ? { evidence: `${img.path} is ad-hoc signed (${img.signingId}), with no developer identity` } : null,
   },
   {

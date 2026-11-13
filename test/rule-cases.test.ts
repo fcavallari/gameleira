@@ -305,3 +305,108 @@ describe('recon bursts: a sliding 60 s window under one parent', () => {
     expect(queued('atomic_stealer.json').items.filter(x => x.item.reconBurst).length).toBeGreaterThanOrEqual(3);
   });
 });
+
+describe('smaller rule gaps', () => {
+  const findings = (path: string, args: string[], o: Parameters<typeof apple>[2] = {}) =>
+    allFindings(analyze(capture([proc('100:1', [apple(path, args, o)])])));
+  const has = (id: string, path: string, args: string[], o: Parameters<typeof apple>[2] = {}) =>
+    findings(path, args, o).some(f => f.ruleId === id);
+
+  describe('download', () => {
+    const wget = (...a: string[]) => has('download', '/usr/local/bin/wget', ['wget', ...a, 'https://example.com/x']);
+    const curl = (...a: string[]) => has('download', '/usr/bin/curl', ['curl', ...a, 'https://example.com/x']);
+    test('wget saves to a file by default; -o is only its log', () => {
+      expect(wget()).toBe(true);
+      expect(wget('-o', '/dev/null')).toBe(true);
+      expect(wget('-q', '-o', 'log.txt')).toBe(true);
+    });
+    test('wget writing to stdout or /dev/null, or only checking (--spider), does not fire', () => {
+      expect(wget('-O', '-')).toBe(false);
+      expect(wget('-qO-')).toBe(false);
+      expect(wget('--output-document=/dev/null')).toBe(false);
+      expect(wget('--output-document', '-')).toBe(false);
+      expect(wget('--spider')).toBe(false);
+    });
+    test('curl --remote-name and --remote-name-all fire', () => {
+      expect(curl('--remote-name')).toBe(true);
+      expect(curl('--remote-name-all')).toBe(true);
+      expect(curl('-o/tmp/x')).toBe(true);
+      expect(curl('-o/dev/null')).toBe(false);
+    });
+  });
+
+  describe('shell-from-pipe covers -s and interpreters', () => {
+    const piped = { stdinIsPipe: true };
+    const pipe = (path: string, args: string[]) => findings(path, args, piped).find(f => f.ruleId === 'shell-from-pipe');
+    test('bash -s and sh -s read their commands from stdin', () => {
+      expect(pipe('/bin/bash', ['bash', '-s'])?.mitre).toEqual(['T1059.004']);
+      expect(pipe('/bin/sh', ['sh', '-s', 'arg1', 'arg2'])).toBeDefined();
+      expect(pipe('/bin/bash', ['bash', '-x'])).toBeDefined();
+    });
+    test('python, perl and ruby reading a piped script', () => {
+      expect(pipe('/usr/bin/python3', ['python3'])?.mitre).toEqual(['T1059.006']);
+      expect(pipe('/usr/bin/python3', ['python3', '-'])?.mitre).toEqual(['T1059.006']);
+      expect(pipe('/usr/bin/perl', ['perl'])?.mitre).toEqual(['T1059']);
+      expect(pipe('/usr/bin/ruby', ['ruby', '-'])?.mitre).toEqual(['T1059']);
+      expect(pipe('/usr/bin/python3', ['python3'])?.explanation).toMatch(/python3 ran a script piped into it/);
+    });
+    test('inline code, a script file or -c is not reading from the pipe', () => {
+      expect(pipe('/bin/sh', ['sh', '-c', 'grep "Model Name"'])).toBeUndefined();
+      expect(pipe('/bin/bash', ['bash', '/tmp/x.sh'])).toBeUndefined();
+      expect(pipe('/usr/bin/perl', ['perl', '-0777pe', 's|a|b|gs'])).toBeUndefined();
+      expect(pipe('/usr/bin/perl', ['perl', '-MData::Dumper', '-ne', 'print'])).toBeUndefined();
+      expect(pipe('/usr/bin/python3', ['python3', '-c', 'print(1)'])).toBeUndefined();
+      expect(pipe('/usr/bin/python3', ['python3', '-m', 'json.tool'])).toBeUndefined();
+      expect(pipe('/usr/bin/python3', ['python3', 'x.py'])).toBeUndefined();
+      expect(findings('/usr/bin/python3', ['python3'], { stdinIsPipe: false }).some(f => f.ruleId === 'shell-from-pipe')).toBe(false);
+    });
+    test('perl re-exec into perl5.30 fires once', () => {
+      const p = proc('100:1', [apple('/usr/bin/perl', ['perl'], { ...piped, seq: 1 }), apple('/usr/bin/perl5.30', ['perl'], { ...piped, seq: 2 })]);
+      expect(analyze(capture([p])).queue[0]!.findings.filter(f => f.ruleId === 'shell-from-pipe')).toHaveLength(1);
+    });
+  });
+
+  test('dscl . authonly (no dash) is a password check', () =>
+    expect(has('dscl-authonly', '/usr/bin/dscl', ['dscl', '.', 'authonly', 'sandy', 'pw'])).toBe(true));
+
+  describe('archive-staging', () => {
+    const arch = (args: string[], o: Parameters<typeof apple>[2] = {}) =>
+      findings(`/usr/bin/${args[0]}`, args, o).find(f => f.ruleId === 'archive-staging');
+    test('tar create mode anywhere in the args', () => {
+      expect(arch(['tar', '-C', '/tmp', '-czf', 'out.tgz', 'stage'])?.severity).toBe('high');
+      expect(arch(['tar', '--exclude', '*.log', '--create', '-f', 'x.tar', 'dir'])?.severity).toBe('med');
+      expect(arch(['tar', '-xzf', 'x.tgz'])).toBeUndefined();
+    });
+    test('the staging path from any arg: attached, --opt=value, or relative to a temp working dir', () => {
+      expect(arch(['tar', '-czf', 'out.tgz', '-C/tmp/stage', '.'])?.severity).toBe('high');
+      expect(arch(['tar', '--directory=/private/tmp/s', '-czf', 'o.tgz', '.'])?.severity).toBe('high');
+      expect(arch(['zip', '-r', 'out.zip', 'loot'], { cwd: '/private/tmp/w' })?.severity).toBe('high');
+      expect(arch(['zip', '-r', 'out.zip', 'docs'], { cwd: '/Users/u/Documents' })?.severity).toBe('med');
+    });
+  });
+
+  test('payload-decode: openssl base64 -d and openssl <cipher> -d; -md is not -d', () => {
+    expect(has('payload-decode', '/usr/bin/openssl', ['openssl', 'base64', '-d', '-in', 'x'])).toBe(true);
+    expect(has('payload-decode', '/usr/bin/openssl', ['openssl', 'aes-256-cbc', '-d', '-in', 'x'])).toBe(true);
+    expect(has('payload-decode', '/usr/bin/openssl', ['openssl', 'enc', '-md', 'md5', '-aes-256-cbc', '-in', 'x'])).toBe(false);
+    expect(has('payload-decode', '/usr/bin/openssl', ['openssl', 'req', '-days', '3', '-nodes'])).toBe(false);
+  });
+
+  test('an empty signing ID is unsigned', () => {
+    const fs = allFindings(analyze(capture([proc('100:1', [img({ path: '/opt/x/tool', signingId: '' })])])));
+    expect(fs.map(f => f.ruleId)).toContain('unsigned');
+  });
+
+  describe('shell-under-app uses the parent image at the time of the fork', () => {
+    const app = img({ path: '/Applications/Evil.app/Contents/MacOS/Evil', signingId: 'evil', teamId: 'T', seq: 1 });
+    const later = apple('/usr/bin/true', ['true'], { seq: 10 });
+    const child = (parentImages: ReturnType<typeof img>[]) => {
+      const parent = proc('50:1', parentImages);
+      const sh = proc('51:1', [apple('/bin/sh', ['sh', '-c', 'id'], { seq: 5 })], { originalParent: '50:1', firstSeq: 5 });
+      return allFindings(analyze(capture([parent, sh]))).some(f => f.ruleId === 'shell-under-app');
+    };
+    test('an app that later exec\'d something else still launched the shell', () => expect(child([app, later])).toBe(true));
+    test('a process that became an app only after the fork did not', () =>
+      expect(child([apple('/bin/zsh', ['zsh'], { seq: 1 }), { ...app, seq: 10 }])).toBe(false));
+  });
+});
