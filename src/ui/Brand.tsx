@@ -27,7 +27,7 @@ export function Frame({ children }: { children: ReactNode }) {
   );
 }
 
-/** Line samples for the three roots, drawn exactly as the Roots panel and the figure draw them. */
+/** Line samples for the three roots, drawn exactly as the Roots panel draws them. */
 export function RootSwatch({ kind }: { kind: 'original' | 'current' | 'responsible' }) {
   return (
     <svg viewBox="0 0 28 10" aria-hidden="true">
@@ -37,47 +37,80 @@ export function RootSwatch({ kind }: { kind: 'original' | 'current' | 'responsib
   );
 }
 
-// The crown is built from 48px tiles, each a square and a quarter disc, set like a modular tile panel.
-// [column, row, corner of the disc (0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left), tile ground, disc]
-type Tile = [number, number, 0 | 1 | 2 | 3, string | null, string];
-const LEAF = 'var(--accent)';
-const DEEP = 'var(--leaf-deep)';
-const CROWN: Tile[] = [
-  [1, 0, 2, null, LEAF], [2, 0, 3, null, LEAF], [3, 0, 2, null, LEAF], [4, 0, 3, null, LEAF], [5, 0, 2, null, LEAF], [6, 0, 3, null, LEAF],
-  [0, 1, 1, null, LEAF], [1, 1, 1, LEAF, DEEP], [2, 1, 0, LEAF, DEEP], [3, 1, 1, LEAF, DEEP],
-  [4, 1, 0, LEAF, DEEP], [5, 1, 1, LEAF, DEEP], [6, 1, 0, LEAF, DEEP], [7, 1, 0, null, LEAF],
-];
-// Figs: small and round, where the crown meets the limb.
-const FIGS: [number, number][] = [[80, 96], [176, 98], [272, 96], [328, 98]];
-
-// The limb is at y 104; the ground at 300. Hanging aerial roots: x and how far down they reach.
-const HANGING: [number, number][] = [
-  [40, 190], [58, 236], [74, 160], [138, 214], [156, 268], [172, 176], [236, 250], [252, 196], [318, 228], [334, 168], [352, 262],
-];
-
-/**
- * A gameleira drawn the way the app reads a process: a crown of tiles, many aerial roots, and three that reached the
- * ground and became trunks. The three are the three ways Gameleira traces where a process came from, drawn as the Roots
- * panel draws them.
+/*
+ * The home page's gameleira, in two parts that meet at one limb: the crown above it (Canopy) and the roots below it
+ * (RootField). Between them the page draws the limb itself, across the whole sheet, and one root from its left end down
+ * the session list. Geometric masses with engraved contour lines; the branches inside the crown are drawn as a graph.
  */
-export function GameleiraFigure() {
-  const clip = useId();
+
+// Crown domes standing on the limb (y 240): [centre x, radius]. The back row is set first, in the deeper tone.
+const BACK: [number, number][] = [[300, 150], [570, 192], [830, 168]];
+const FRONT: [number, number][] = [[140, 104], [420, 132], [700, 146], [930, 112]];
+// Branches as a graph: each path runs from the limb up through its forks; nodes sit at the forks, figs at the ends.
+const BRANCHES: [number, number][][] = [
+  [[210, 240], [290, 176], [350, 112]], [[290, 176], [236, 126]],
+  [[500, 240], [560, 160], [612, 92]], [[560, 160], [500, 104]],
+  [[760, 240], [806, 168], [866, 124]], [[806, 168], [770, 112]],
+  [[90, 240], [130, 186]],
+];
+const FORKS: [number, number][] = [[290, 176], [560, 160], [806, 168]];
+const FIGS: [number, number][] = [[350, 112], [236, 126], [612, 92], [500, 104], [866, 124], [770, 112], [130, 186]];
+
+const arc = (cx: number, r: number, y = 240): string => `M ${cx - r} ${y} A ${r} ${r} 0 0 1 ${cx + r} ${y}`;
+
+export function Canopy() {
   return (
-    <svg viewBox="0 0 400 304" role="img" aria-label="A gameleira: aerial roots hang from a wide crown; three reach the ground">
-      <defs><clipPath id={clip}><rect width="48.6" height="48.6" /></clipPath></defs>
-      {CROWN.map(([col, row, corner, ground, disc]) => (
-        <g key={`${col}:${row}`} transform={`translate(${8 + col * 48} ${8 + row * 48})`} clipPath={`url(#${clip})`}>
-          {ground && <rect width="48.6" height="48.6" fill={ground} />}
-          <circle cx={corner === 1 || corner === 2 ? 48 : 0} cy={corner >= 2 ? 48 : 0} r="48" fill={disc} />
+    <svg viewBox="0 0 960 240" preserveAspectRatio="xMinYMax slice" aria-hidden="true">
+      {BACK.map(([cx, r]) => (
+        <g key={cx}>
+          <path d={`${arc(cx, r)} Z`} fill="var(--botanical-2)" />
+          {[0.86, 0.72].map(k => <path key={k} d={arc(cx, r * k)} fill="none" stroke="var(--accent)" strokeOpacity=".12" />)}
         </g>
       ))}
-      {FIGS.map(([x, y]) => <circle key={x} cx={x} cy={y} r="5" fill="var(--med-mark)" />)}
-      <rect x="0" y="104" width="400" height="8" fill="var(--limb)" />
-      {HANGING.map(([x, y]) => <rect key={x} x={x} y="112" width="3" height={y - 112} fill="var(--root-current)" opacity=".6" />)}
-      <rect x="100" y="112" width="8" height="188" fill="var(--root-original)" />
-      <line x1="204" y1="112" x2="204" y2="300" stroke="var(--root-current)" strokeWidth="8" strokeDasharray="16 8" />
-      <rect x="292" y="112" width="8" height="188" fill="var(--root-responsible)" />
-      <rect x="0" y="300" width="400" height="3" fill="var(--limb)" />
+      {FRONT.map(([cx, r]) => (
+        <g key={cx}>
+          <path d={`${arc(cx, r)} Z`} fill="var(--botanical)" />
+          {[0.84, 0.66, 0.48].map(k => <path key={k} d={arc(cx, r * k)} fill="none" stroke="var(--accent)" strokeOpacity=".22" />)}
+        </g>
+      ))}
+      {BRANCHES.map((pts, i) => (
+        <polyline key={i} points={pts.map(p => p.join(',')).join(' ')} fill="none" stroke="var(--limb)" strokeWidth="2" />
+      ))}
+      {FORKS.map(([x, y]) => <circle key={x} cx={x} cy={y} r="4" fill="var(--limb)" />)}
+      {FIGS.map(([x, y]) => <circle key={x} cx={x} cy={y} r="4.5" fill="var(--node)" />)}
+    </svg>
+  );
+}
+
+// Hanging roots below the limb: [x %, how far down %, ends in a node]. The three that reach the ground are the trunks.
+const HANG: [number, number, boolean][] = [
+  [6, 34, false], [10, 58, true], [14, 22, false], [30, 46, false], [34, 71, true], [38, 28, false],
+  [57, 38, false], [61, 63, true], [66, 18, false], [84, 52, false], [88, 30, true], [93, 66, false],
+];
+export const TRUNKS: { x: number; kind: 'original' | 'current' | 'responsible'; label: string }[] = [
+  { x: 22, kind: 'original', label: 'original parent' },
+  { x: 48, kind: 'current', label: 'current parent' },
+  { x: 76, kind: 'responsible', label: 'responsible' },
+];
+
+export function RootField() {
+  return (
+    <svg width="100%" height="100%" aria-hidden="true">
+      {HANG.map(([x, y, node]) => (
+        <g key={x}>
+          <line x1={`${x}%`} y1="0" x2={`${x}%`} y2={`${y}%`} stroke="var(--root-line)" strokeWidth="1.5" />
+          {node && <circle cx={`${x}%`} cy={`${y}%`} r="3.5" fill="var(--node)" />}
+        </g>
+      ))}
+      {TRUNKS.map(({ x, kind }) => (
+        <g key={kind}>
+          <line x1={`${x}%`} y1="0" x2={`${x}%`} y2="100%" stroke={`var(--root-${kind})`} strokeWidth="6"
+            strokeDasharray={kind === 'current' ? '14 8' : undefined} />
+          <line x1={`${x}%`} y1="94%" x2={`${x - 2.5}%`} y2="100%" stroke={`var(--root-${kind})`} strokeWidth="2" />
+          <line x1={`${x}%`} y1="94%" x2={`${x + 2.5}%`} y2="100%" stroke={`var(--root-${kind})`} strokeWidth="2" />
+          <circle cx={`${x}%`} cy="5" r="5" fill="var(--node)" />
+        </g>
+      ))}
     </svg>
   );
 }

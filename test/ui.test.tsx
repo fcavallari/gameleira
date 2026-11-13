@@ -87,8 +87,8 @@ async function newSession(name: string): Promise<void> {
 test('create session and see empty drop zone with capture command', async () => {
   render(<App />);
   await newSession('lab MacBook');
-  expect(await screen.findByText(CMD)).toBeInTheDocument();
-  expect(screen.getByRole('heading', { name: 'lab MacBook' })).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'lab MacBook' })).toBeInTheDocument();
+  expect(screen.getByText(CMD)).toBeInTheDocument();
 });
 
 test('the header shows what was skipped: unreadable lines, other event types, schema version, older-format note', async () => {
@@ -353,7 +353,8 @@ test('a persist() failure is ignored', async () => {
     value: { persist: vi.fn().mockRejectedValue(new Error('no')), persisted: vi.fn().mockResolvedValue(false) } });
   render(<App />);
   await newSession('first');
-  expect(await screen.findByText(CMD)).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'first' })).toBeInTheDocument();
+  expect(screen.getByText(CMD)).toBeInTheDocument();
 });
 
 // --- SessionContext -------------------------------------------------------------------------------------------

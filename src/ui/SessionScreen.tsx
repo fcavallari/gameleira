@@ -19,7 +19,7 @@ const TABS: { id: View; label: string }[] = [
 
 const fmt = (n: number): string => n.toLocaleString('en-US');
 
-function CaptureCommand() {
+export function CaptureCommand({ hint = 'Run this, stop it with Ctrl-C, then drop capture.jsonl here.' }: { hint?: string }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try { await navigator.clipboard.writeText(CAPTURE_CMD); setCopied(true); setTimeout(() => { setCopied(false); }, 1500); }
@@ -28,7 +28,7 @@ function CaptureCommand() {
   return (
     <div className="cmd">
       <h2>Capture on the Mac you are investigating</h2>
-      <p className="muted">Run this, stop it with Ctrl-C, then drop capture.jsonl here.</p>
+      <p className="muted">{hint}</p>
       <pre><code>{CAPTURE_CMD}</code></pre>
       <button onClick={() => { void copy(); }}>{copied ? 'Copied' : 'Copy'}</button>
       <ul>
