@@ -50,7 +50,7 @@ export function TriageView() {
       const st = verdicts.get(verdictKey(item))?.status ?? 'unreviewed';
       if (status !== 'all' && st !== status) continue;
       if (needle && !(haystacks.get(item.key) ?? '').includes(needle)) continue;
-      out.push({ item, name: itemName(capture, item), args: itemArgs(capture, item), status: st, routine: !visible.has(item.key) });
+      out.push({ item, name: itemName(capture, item), args: itemArgs(capture, item), status: st, routine: !visible.has(item.key), routineKept: triage.kept.get(item.key) ?? null });
     }
     return out;
   }, [capture, triage, verdicts, status, sev, search, showHidden, haystacks]);

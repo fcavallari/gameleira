@@ -10,6 +10,8 @@ export interface QueueRow {
   status: Status;
   /** Hidden by a routine mark; only listed (greyed) when the user asks to see them. */
   routine: boolean;
+  /** The program is marked routine but the row stays visible: why (a high or persistence finding). */
+  routineKept: string | null;
 }
 
 const ROW_H = 32;
@@ -27,6 +29,11 @@ function Row({ row, selected, onSelect, style }: {
       <span className={`status st-${row.status}`} title={row.status} aria-label={row.status}>{STATUS_ICON[row.status]}</span>
       <span className="qname truncate">{row.name}</span>
       <span className="args truncate">{row.args}</span>
+      {row.routineKept !== null && (
+        <span className="chain-mark" title="This program is marked routine, but a routine mark never hides a row with a high or persistence finding">
+          routine program — kept: {row.routineKept}
+        </span>
+      )}
       {item.inFlaggedChain && (
         <span className="chain-mark" title="Part of a flagged chain: it ran under, or as part of, something that was flagged">in chain</span>
       )}

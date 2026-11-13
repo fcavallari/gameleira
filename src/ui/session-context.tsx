@@ -7,16 +7,13 @@ import { basename, latestImage } from '../model/util';
 import { SEVERITY_RANK, type Severity } from '../rules/rules';
 import type { QueueItem } from '../rules/engine';
 import { importSession } from '../session/export';
-import { applyRoutine, isRiskyRoutine, programKey } from '../session/routine';
+import { applyRoutine, isRiskyRoutine, NO_IDENTITY, programKey, routineImpact, type RoutineResult } from '../session/routine';
 import type { CaptureRec, RoutineRec, Session, Status, Store, Verdict } from '../session/store';
 import { fetchDevFixture } from './dev';
 import { DEFAULT_FILTERS, type TriageFilters } from './triage-model';
 
 export type View = 'triage' | 'tree' | 'confirmed';
 export interface Progress { fileName: string; bytes: number; total: number }
-
-/** Programs with no signing id, team id or path cannot be told apart: a routine mark would hide everything. */
-const NO_IDENTITY = '-|-|-';
 
 export interface SessionCtx {
   store: Store;
@@ -53,7 +50,7 @@ export interface SessionCtx {
   routine: RoutineRec[];
   routineKeys: Set<string>;
   /** The active capture's queue with routine programs removed, and how many were hidden. */
-  triage: { queue: QueueItem[]; hiddenCount: number } | null;
+  triage: RoutineResult | null;
   selected: ProcId | null;
   /** The process "Show in tree" asked for, until the user picks another one. */
   focusId: ProcId | null;
@@ -332,10 +329,17 @@ export function SessionProvider({ store, children }: { store: Store; children: R
     const key = programKey(img);
     if (!sid || key === NO_IDENTITY) return false;
     const name = basename(img.path) || img.signingId || key;
-    if (isRiskyRoutine(img) &&
-        !window.confirm(`“${name}” is a shell, interpreter or download tool that attackers also use. Marking it routine hides every run of it, in every capture of this session. Mark it anyway?`)) {
-      return false;
+    // One prompt for both reasons to stop: an attacker-favoured program, and high or persistence rows that stay visible.
+    let kept = 0;
+    for (const cap of latest.current.captures.values()) kept += routineImpact(cap.analysis, cap.model, key).kept;
+    const warn: string[] = [];
+    if (isRiskyRoutine(img)) {
+      warn.push(`“${name}” is a shell, interpreter or download tool that attackers also use. Marking it routine hides every run of it, in every capture of this session.`);
     }
+    if (kept > 0) {
+      warn.push(`${kept} high-severity or persistence ${kept === 1 ? 'row' : 'rows'} of “${name}” in the loaded captures will stay visible, because a routine mark never hides those.`);
+    }
+    if (warn.length > 0 && !window.confirm(`${warn.join(' ')} Mark it anyway?`)) return false;
     const rec: RoutineRec = { sessionId: sid, programKey: key, label: name, added: now() };
     try { await store.addRoutine(rec); } catch (e) { report('Could not save the routine mark', e); return false; }
     if (sessionId.current === sid) setRoutine(list => [...list.filter(r => r.programKey !== key), rec]);

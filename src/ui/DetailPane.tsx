@@ -6,10 +6,10 @@ import { basename, latestImage } from '../model/util';
 import type { Finding, QueueItem } from '../rules/engine';
 import { MITRE_NAMES } from '../rules/mitre';
 import type { Severity } from '../rules/rules';
-import { programKey } from '../session/routine';
+import { NO_IDENTITY, programKey } from '../session/routine';
 import type { Status } from '../session/store';
 import { useSession } from './session-context';
-import { fmtArgs, fmtTime, NO_IDENTITY, toggleStatus } from './triage-model';
+import { fmtArgs, fmtTime, toggleStatus } from './triage-model';
 
 const SHOW_FIRST = 40;
 const yesNo = (b: boolean): string => (b ? 'yes' : 'no');
@@ -237,6 +237,7 @@ function Actions({ vkey, p, noteRef }: { vkey: string; p: Process | null; noteRe
   const img = p ? latestImage(p) : undefined;
   const pkey = img ? programKey(img) : null;
   const noIdentity = pkey === null || pkey === NO_IDENTITY;
+  const keptWhy = pkey !== null && c.routineKeys.has(pkey) ? c.triage?.kept.get(`p:${vkey}`) : undefined;
   return (
     <Section id="d-actions" title="Actions">
       <p className="small"><span className="muted">Status: </span><strong>{STATUS_TEXT[status]}</strong></p>
@@ -249,7 +250,8 @@ function Actions({ vkey, p, noteRef }: { vkey: string; p: Process | null; noteRe
               onClick={() => { if (img) void c.addRoutine(img); }}>Treat as routine</button>)}
         {p && <button onClick={() => { c.showInTree(p.id); }}>Show in tree <kbd>t</kbd></button>}
       </div>
-      {p && <p className="muted small">“Treat as routine” hides every run of this program, in every capture of this session.</p>}
+      {p && <p className="muted small">“Treat as routine” hides every run of this program, in every capture of this session, except rows with a high or persistence finding.</p>}
+      {keptWhy && <p className="small warn">This program is marked routine, but this row stays visible: {keptWhy}.</p>}
       <Note key={`${fingerprint}:${vkey}`} vkey={vkey} fingerprint={fingerprint} status={status} saved={verdict?.note ?? ''} noteRef={noteRef} />
       <p className="muted small">Press <kbd>n</kbd> to jump to the note. Press Confirm or Benign again to go back to unreviewed.</p>
     </Section>

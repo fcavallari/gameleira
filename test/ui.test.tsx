@@ -10,6 +10,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { loadCapture, type LoadedCapture } from '../src/ingest/load';
 import { runLoad } from '../src/ingest/run';
+import { displayName } from '../src/model/relations';
 import type { CaptureModel, Image, Process } from '../src/model/types';
 import { basename, latestImage } from '../src/model/util';
 import { forestOf, flatten, keepSet, makeFoldInfo, revealKeys } from '../src/ui/tree-model';
@@ -18,7 +19,7 @@ import { SessionScreen } from '../src/ui/SessionScreen';
 import { TreeView } from '../src/ui/TreeView';
 import { TriageView } from '../src/ui/TriageView';
 import { DEFAULT_FILTERS, type TriageFilters } from '../src/ui/triage-model';
-import { applyRoutine, programKey } from '../src/session/routine';
+import { applyRoutine, keepReason, programKey } from '../src/session/routine';
 import { procByPid } from './helpers';
 import { StoreErrorBanner } from '../src/ui/StoreErrorBanner';
 import { openStore, type CaptureRec, type Status, type Store, type Verdict } from '../src/session/store';
@@ -376,7 +377,8 @@ test('routine marks hide queue items; the count shows in the header', async () =
   await act(async () => { await ctx.openSession(s.id); });
   await act(async () => { await ctx.loadFiles([dropped('shlayer.json')]); });
   const cap = ctx.captures.get(ctx.active!)!;
-  const item = cap.analysis.queue.find(q => q.kind === 'process' && latestImage(cap.model.processes.get(q.procId!)!)?.path)!;
+  // A row a routine mark may hide: neither high nor persistence (those stay visible).
+  const item = cap.analysis.queue.find(q => q.kind === 'process' && keepReason(q) === null && latestImage(cap.model.processes.get(q.procId!)!)?.path)!;
   const total = ctx.triage!.queue.length;
   expect(ctx.triage!.hiddenCount).toBe(0);
   await act(async () => { await ctx.addRoutine(latestImage(cap.model.processes.get(item.procId!)!)!); });
@@ -696,6 +698,42 @@ test('routine hidden: counted in the footer, shown greyed on request; Treat as r
   expect(addRoutine).toHaveBeenCalledWith(latestImage(procByPid(cap.model, 40753)));
 }, 60_000);
 
+/** The es-lab process that wrote com.test.studyguide.plist: its row carries the high persistence finding. */
+async function plistWriterImage(): Promise<Image> {
+  const cap = await loadEsLab();
+  const row = cap.analysis.queue.find(q => q.findings.some(f => f.persistenceId === 'btm:7709'))!;
+  return latestImage(cap.model.processes.get(row.procId!)!)!;
+}
+
+test('a routine mark never hides the row with a persistence finding: the row says why it stayed', async () => {
+  const cap = await loadEsLab();
+  const writer = await plistWriterImage();
+  renderTriage(cap, { routineKeys: new Set([programKey(writer)]) });
+  const rows = await screen.findAllByRole('option');
+  const kept = rows.filter(r => /routine program — kept: high severity, persistence/.test(r.textContent ?? ''));
+  expect(kept).toHaveLength(1);
+  expect(kept[0]).not.toHaveClass('routine');
+  expect(screen.getByText(/0 routine hidden/)).toBeInTheDocument();
+  await user.click(kept[0]!);
+  expect(screen.getByText(/marked routine, but this row stays visible: high severity, persistence/)).toBeInTheDocument();
+}, 60_000);
+
+test('Treat as routine asks first when high or persistence rows of that program would stay visible', async () => {
+  const { store, sessionId } = await withSession('es-lab.jsonl');
+  const writer = await plistWriterImage();
+  vi.mocked(window.confirm).mockReturnValueOnce(false);
+  await act(async () => { expect(await ctx.addRoutine(writer)).toBe(false); });
+  expect(window.confirm).toHaveBeenCalledTimes(1);
+  const asked = String(vi.mocked(window.confirm).mock.calls[0]![0]);
+  expect(asked).toMatch(/1 high-severity or persistence row of .* will stay visible/);
+  expect(asked.match(/Mark it anyway\?/g)).toHaveLength(1);   // one prompt, merged with the risky-program text
+  expect(await store.listRoutine(sessionId)).toHaveLength(0);
+  await act(async () => { expect(await ctx.addRoutine(writer)).toBe(true); });
+  expect(await store.listRoutine(sessionId)).toHaveLength(1);
+  // the kept row is still in the queue the user sees
+  expect(ctx.triage!.queue.some(q => q.findings.some(f => f.persistenceId === 'btm:7709'))).toBe(true);
+}, 60_000);
+
 test('note is saved on blur, only when it changed', async () => {
   const { setVerdict } = renderTriage(await loadEsLab());
   await user.click(screen.getByText(/display dialog/));
@@ -856,19 +894,31 @@ test('a fold row expands on click and lists what it counted; Fold routine off sh
 
 test('marking a flagged program routine folds it, with the count going up by one', async () => {
   const cap = await treeSession();
-  const osa = procByPid(cap.model, 40753);
-  const foldUnderZsh = (): HTMLElement => {
-    const zsh = itemWith(/^[▸▾\s]*zsh/)!;
+  const curl = procByPid(cap.model, 39838);   // flagged, but neither high nor persistence: a routine mark may hide it
+  const parentName = displayName(cap.model, curl.originalParent!);
+  const foldUnderParent = (): HTMLElement | undefined => {
+    const parent = itemWith(new RegExp(`^[▸▾\\s]*${parentName}`))!;
     const all = items();
-    return all.slice(all.indexOf(zsh)).find(el => /^[▸▾\s]*routine:/.test(el.textContent ?? '') && level(el) === level(zsh) + 1)!;
+    return all.slice(all.indexOf(parent)).find(el => /^[▸▾\s]*routine:/.test(el.textContent ?? '') && level(el) === level(parent) + 1);
   };
   const total = (el: HTMLElement): number => Number(/(\d+) processes/.exec(el.textContent ?? '')![1]);
+  await screen.findByText(/^curl -s/);
+  const fold0 = foldUnderParent();
+  const before = fold0 ? total(fold0) : 0;
+  await act(async () => { await ctx.addRoutine(latestImage(curl)!); });
+  await waitFor(() => { expect(itemWith(/curl -s https/)).toBeUndefined(); });
+  expect(total(foldUnderParent()!)).toBe(before + 1);
+  await user.click(foldUnderParent()!);
+  expect(itemWith(/curl -s https/)).toBeDefined();
+}, 60_000);
+
+test('marking the program that raised a high finding routine does not fold its row', async () => {
+  const cap = await treeSession();
+  const osa = procByPid(cap.model, 40753);   // fake-prompt, high
   await screen.findByText(/osascript/);
-  const before = total(foldUnderZsh());
   await act(async () => { await ctx.addRoutine(latestImage(osa)!); });
-  await waitFor(() => { expect(itemWith(/osascript/)).toBeUndefined(); });
-  expect(total(foldUnderZsh())).toBe(before + 1);
-  await user.click(foldUnderZsh());
+  expect(ctx.routineKeys.has(programKey(latestImage(osa)!))).toBe(true);
+  expect(ctx.triage!.queue.some(q => q.procId === osa.id)).toBe(true);
   expect(itemWith(/osascript/)).toBeDefined();
 }, 60_000);
 

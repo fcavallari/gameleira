@@ -71,12 +71,11 @@ test('routine hides matching programs and counts them', () => {
   expect(r.hiddenCount).toBeGreaterThanOrEqual(1);
   expect(r.queue.length + r.hiddenCount).toBe(a.queue.length);
 });
-test('routine never hides persistence items', () => {
+test('routine never hides persistence-only items', () => {
   const { m, a } = queued('es-lab.jsonl');
   const keys = new Set([...m.processes.values()].flatMap(p => p.images.map(programKey)));
   const r = applyRoutine(a, m, keys);
-  expect(r.queue.every(q => q.kind === 'persistence')).toBe(true);
-  expect(r.queue.length).toBe(a.queue.filter(q => q.kind === 'persistence').length);
+  expect(r.queue.filter(q => q.kind === 'persistence')).toHaveLength(a.queue.filter(q => q.kind === 'persistence').length);
 });
 test('programKey format', () => {
   expect(programKey(img('/bin/ls'))).toBe('-|-|/bin/ls');
