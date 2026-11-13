@@ -63,7 +63,8 @@ export function StartScreen() {
           <h1 id="home-h" className="home-title">Gameleira</h1>
           <p className="tagline">Every root, not just the parent PID.</p>
           <p className="lede">Reconstruct macOS process lineage from eslogger captures. Follow original parents, responsible
-            processes, XPC services and exec chains to discover where processes actually came from.</p>
+            processes, XPC services and exec chains to discover where processes actually came from. Everything stays in
+            this browser; nothing is uploaded.</p>
         </section>
         <div className="canopy"><Canopy /></div>
         <div className="limb" aria-hidden="true" />
@@ -90,12 +91,12 @@ export function StartScreen() {
             {c.sessions.length > 0 && (
               <div className="srow shdr" aria-hidden="true"><span>Session</span><span className="num">Captures</span><span>Last updated</span><span /></div>
             )}
+            {c.sessionsLoaded && c.sessions.length === 0 && !creating && (
+              <p className="node open muted">No sessions yet. Create one for each investigation.</p>
+            )}
             <ul className="sessions" aria-label="Sessions">
-              {c.sessionsLoaded && c.sessions.length === 0 && !creating && (
-                <li className="node-open"><p className="muted">No sessions yet. Create one for each investigation.</p></li>
-              )}
               {c.sessions.map(s => (
-                <li key={s.id} className={renaming === s.id ? 'editing' : 'srow'}>
+                <li key={s.id} className={renaming === s.id ? 'node editing' : 'node srow'}>
                   {renaming === s.id ? (
                     <form className="new-session" onSubmit={e => { void rename(e, s.id); }}>
                       <label>New name <input autoFocus value={newName} onChange={e => { setNewName(e.target.value); }} /></label>
@@ -115,14 +116,14 @@ export function StartScreen() {
                   )}
                 </li>
               ))}
-              <li className="node-open import" aria-labelledby="import-h">
-                <div>
-                  <h3 id="import-h">Import a session</h3>
-                  <p className="muted small">A session exported from the Confirmed tab, on this machine or another.</p>
-                </div>
-                <ImportSession />
-              </li>
             </ul>
+            <section className="node open import" aria-labelledby="import-h">
+              <div>
+                <h3 id="import-h">Import a session</h3>
+                <p className="muted small">A session saved from a session’s page, on this machine or another.</p>
+              </div>
+              <ImportSession />
+            </section>
           </div>
 
           <div className="howto">

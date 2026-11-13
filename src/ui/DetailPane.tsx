@@ -10,7 +10,7 @@ import { NO_IDENTITY, programKey } from '../session/routine';
 import type { Status } from '../session/store';
 import { LaunchItem } from './LaunchItem';
 import { useSession } from './session-context';
-import { fmtArgs, fmtTime, verdictKey } from './triage-model';
+import { fmtArgs, fmtTime, TRIAGE_KEYS, verdictKey } from './triage-model';
 
 const SHOW_FIRST = 40;
 const yesNo = (b: boolean): string => (b ? 'yes' : 'no');
@@ -329,8 +329,6 @@ function LaunchItems({ cap, p, findings, onSelect }: { cap: LoadedCapture; p: Pr
   );
 }
 
-const KEYS: [string, string][] = [['j', 'next row'], ['k', 'previous row'], ['c', 'confirm suspicious'], ['b', 'mark benign'], ['n', 'write a note'], ['t', 'show in the tree']];
-
 /** Before anything is selected: what is left to review, by severity, and the keys that work through it. */
 function NothingSelected() {
   const { triage, verdicts } = useSession();
@@ -347,7 +345,7 @@ function NothingSelected() {
       )}
       <p className="muted">Select a flagged process on the left to see why it was flagged. Rows run high first, then by time.</p>
       <dl className="keys">
-        {KEYS.map(([k, what]) => <div key={k}><dt><kbd>{k}</kbd></dt><dd>{what}</dd></div>)}
+        {TRIAGE_KEYS.map(k => <div key={k.key}><dt><kbd>{k.key}</kbd></dt><dd>{k.what}</dd></div>)}
       </dl>
     </div>
   );

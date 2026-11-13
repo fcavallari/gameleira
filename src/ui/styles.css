@@ -54,7 +54,8 @@ body { margin: 0; min-height: 100vh; background: var(--frame); color: var(--text
 .topbar .crumb { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--muted); }
 .topbar .crumb-sep { color: var(--control); }
 .topbar .spacer { flex: 1 1 auto; }
-.topbar .meta { color: var(--muted); font-size: 12px; }
+.topbar .meta { display: flex; gap: 14px; align-items: baseline; color: var(--muted); font-size: 12px; }
+.topbar .meta .mono { font-size: 11px; }
 .sheet { flex: 1 1 auto; margin: 0 var(--inset) var(--inset); background: var(--sheet); border: 1px solid var(--border);
   border-radius: var(--radius-sheet); padding: var(--pad); min-width: 0; position: relative; }
 .sheet.over { outline: 2px dashed var(--accent); outline-offset: -10px; background: var(--drop); }
@@ -91,13 +92,14 @@ select { padding: 0 8px; }
 button { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; transition: background-color .12s, border-color .12s; }
 button:hover { border-color: var(--text); }
 button:active { transform: translateY(1px); }
-button.primary { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); font-weight: 500; }
-button.primary:hover { background: var(--text); }
+button.primary, .filebtn.primary { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); font-weight: 500; }
+button.primary:hover, .filebtn.primary:hover { background: var(--text); }
 button.danger { color: var(--danger); }
 button.danger:hover { border-color: var(--danger); }
 button.ghost { border-color: transparent; background: none; color: var(--muted); }
 button.ghost:hover { color: var(--text); background: var(--raised); }
 button.link { border: 0; background: none; color: var(--text); text-align: left; font-weight: 500; padding: 0; min-height: 0;
+  white-space: normal; overflow-wrap: anywhere;
   text-decoration: underline; text-decoration-color: var(--control); text-underline-offset: 3px; }
 button.link:hover { text-decoration-color: var(--text); }
 button[aria-pressed="true"] { background: var(--active); border-color: var(--text); }
@@ -127,8 +129,6 @@ progress { height: 6px; accent-color: var(--accent); }
 
 /* Home: the gameleira runs through the page. Grid lines: the text column, then the root field on the right. */
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.topbar .meta { display: flex; gap: 14px; align-items: baseline; }
-.topbar .meta .mono { font-size: 11px; }
 .sheet.home { display: grid; grid-template-columns: minmax(0, 8fr) minmax(280px, 5fr); grid-template-rows: auto auto auto 1fr;
   column-gap: 56px; padding-bottom: 0; overflow: hidden; }
 .home-banner { grid-column: 1 / -1; grid-row: 1; }
@@ -148,7 +148,8 @@ progress { height: 6px; accent-color: var(--accent); }
 .shead { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
 .shead h2 { font-size: 20px; margin: 0; }
 .shead p { margin: 6px 0 0; max-width: 60ch; }
-button.primary.accent { background: var(--accent); border-color: var(--accent); color: var(--frame); font-weight: 600; min-height: 36px; padding: 0 16px; }
+button.primary.accent { background: var(--accent); border-color: var(--accent); color: var(--frame); font-weight: 600; min-height: 36px; padding: 0 16px;
+  justify-content: center; }
 button.primary.accent:hover { background: var(--text); border-color: var(--text); }
 .new-session { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
 .new-session label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
@@ -157,16 +158,16 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 .sessions { list-style: none; margin: 0; padding: 0; }
 .srow { display: grid; grid-template-columns: minmax(0, 1fr) 112px 150px 150px; align-items: center; gap: 16px; }
 .shdr { margin-top: 24px; padding: 0 12px 8px; font-size: 12px; color: var(--muted); }
-.sessions > li { position: relative; }
+.stree .node { position: relative; }
 .sessions > li.srow { min-height: 56px; padding: 0 12px; border-radius: var(--radius-control); transition: background-color .15s; }
 .sessions > li.srow:hover { background: var(--raised); }
 .sessions > li.srow + li.srow::after { content: ''; position: absolute; left: 12px; right: 12px; top: 0; border-top: 1px solid var(--rule); }
 /* Each session is a node on the root, joined to it by a short rootlet. */
-.sessions > li::before { content: ''; position: absolute; left: -34px; top: 50%; width: 10px; height: 10px; margin-top: -5px;
+.stree .node::before { content: ''; position: absolute; left: -34px; top: 50%; width: 10px; height: 10px; margin-top: -5px;
   border-radius: 50%; background: var(--node); transition: transform .15s; }
 .sessions > li.srow:hover::before { transform: scale(1.35); }
 .sessions > li > .sname::before { content: ''; position: absolute; left: -28px; top: 50%; width: 28px; border-top: 2px solid var(--limb); }
-.sessions .sname { font-size: 15px; font-weight: 600; text-decoration: none; padding: 8px 0; justify-self: start; max-width: 100%; }
+.sessions .sname { font-size: 15px; font-weight: 600; text-decoration: none; padding: 8px 0; justify-self: start; max-width: 100%; white-space: nowrap; }
 .sessions .sname:hover { text-decoration: underline; text-underline-offset: 4px; text-decoration-color: var(--accent); }
 .sessions .num { text-align: right; font-variant-numeric: tabular-nums; }
 .sessions .when { font-size: 12px; }
@@ -175,12 +176,12 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 .sessions li:hover .acts button, .sessions .acts button:focus-visible { opacity: 1; }
 .sessions li.editing { padding: 4px 12px 12px; }
 .sessions li.editing::before { top: 34px; }
-.sessions li.node-open { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 18px 12px; }
-.sessions li.node-open::before { background: var(--sheet); border: 2px solid var(--node); }
-.sessions li.node-open p { margin: 0; }
-.sessions li.import { margin-top: 12px; }
-.sessions li.import h3 { margin: 0; font-size: 14px; }
-.sessions li.import p { margin-top: 2px; }
+/* Open nodes are not sessions: the empty message, and the place a saved session is imported. */
+.stree .node.open { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 0; padding: 18px 12px; }
+.stree .node.open::before { background: var(--sheet); border: 2px solid var(--node); }
+.stree .import { margin-top: 12px; }
+.stree .import h3 { margin: 0; font-size: 14px; }
+.stree .import p { margin: 2px 0 0; }
 
 .howto { margin-left: 45px; max-width: 760px; }
 .howto .cmd h2 { font-size: 14px; }
@@ -214,13 +215,13 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
   .home-title { font-size: 36px; }
   .shead { flex-direction: column; align-items: stretch; }
   .stree { padding-left: 20px; margin-left: 9px; }
-  .sessions > li::before { left: -26px; }
+  .stree .node::before { left: -26px; }
   .sessions > li > .sname::before { left: -20px; width: 20px; }
   .srow { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 8px 12px; }
   .srow .when { grid-column: 1 / -1; }
   .shdr { display: none; }
   .howto { margin-left: 0; }
-  .topbar .meta .mono { display: none; }
+  .topbar .meta .mono, .topbar .meta.wide { display: none; }
 }
 
 /* Session screen: title row, counts, tabs. */
@@ -229,6 +230,8 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 .counts { display: flex; gap: 6px 20px; flex-wrap: wrap; margin-top: 6px; color: var(--muted); font-size: 13px; }
 .counts .lead { color: var(--text); font-weight: 600; }
 .capture-info { margin: 4px 0 0; }
+.save-note { margin: 6px 0 0; text-align: right; }
+.save-note button.link { font-weight: 400; }
 .tabs { display: flex; gap: 24px; margin-top: 18px; border-bottom: 1px solid var(--border); }
 .tabs button { border: 0; border-radius: 0; background: none; min-height: 40px; padding: 0 2px; margin-bottom: -1px; color: var(--muted);
   font-size: 14px; font-weight: 500; border-bottom: 2px solid transparent; }
@@ -236,17 +239,27 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 .tabs button.on { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
 .tabs button:active { transform: none; }
 .tabpanel { padding-top: 20px; }
+/*
+ * With the two panes showing, the session screen is one viewport tall and the panes take what the header leaves,
+ * whatever the header holds; each pane scrolls on its own. Narrow screens stack the panes and scroll the page instead.
+ */
+@media (min-width: 901px) {
+  .app.session { height: 100vh; }
+  .app.session .sheet { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
+  .app.session .sheet > * { flex: none; }
+  .app.session .tabpanel.panes { flex: 1 1 0; min-height: 460px; }
+  .tabpanel.panes > .triage { height: 100%; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
+}
 
 /* Loading a capture */
-.addcap { position: relative; }
 .filebtn { position: relative; display: inline-flex; align-items: center; gap: 6px; min-height: var(--control-h); padding: 0 12px;
   border: 1px solid var(--control); border-radius: var(--radius-control); font-size: 13px; cursor: pointer; background: var(--sheet); white-space: nowrap; }
 .filebtn:hover { border-color: var(--text); }
-.filebtn.primary { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); font-weight: 500; }
 .filebtn input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 .filebtn:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .loading { display: flex; align-items: center; gap: 12px; margin-top: 12px; max-width: 640px; }
-.reload { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 0 0; padding: 0; list-style: none; font-size: 13px; }
+.captures { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 10px 0 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
+.captures li.active { color: var(--text); font-weight: 600; }
 .drop { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 32px; align-items: start; }
 .drop-target { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 18px; min-height: 340px; padding: 32px;
   border: 1.5px dashed var(--control); border-radius: var(--radius-card); background: var(--raised); }
@@ -255,7 +268,6 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 .drop-target svg { color: var(--accent); }
 .drop-target .big + p { margin-top: 6px; }
 .drop-target .big { font: 500 20px/1.3 var(--brand); }
-.drop .list li.active { font-weight: 600; }
 .cmd h2 { margin-bottom: 4px; }
 .cmd pre { margin: 10px 0; padding: 12px 14px; background: var(--raised); border-radius: var(--radius-card);
   font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all; user-select: all; }
@@ -267,7 +279,7 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 .wrap { overflow-wrap: anywhere; white-space: pre-wrap; }
 .triage { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: var(--gap); align-items: start; }
 .queue, .detail { border: 1px solid var(--border); border-radius: var(--radius-card); min-width: 0; background: var(--sheet); }
-.queue { display: flex; flex-direction: column; height: calc(100vh - 248px); min-height: 440px; overflow: hidden; }
+.queue { display: flex; flex-direction: column; overflow: hidden; }
 .qtools { display: grid; gap: 10px; padding: 12px; border-bottom: 1px solid var(--border); }
 .qtools input[type="text"] { width: 100%; }
 .qtools .row { gap: 6px 14px; font-size: 13px; color: var(--muted); }
@@ -287,8 +299,7 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 .qempty { padding: 12px; margin: 0; }
 .qfoot { display: flex; justify-content: space-between; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--raised); }
 .qfoot button.link { font-size: 12px; }
-.detail { padding: 4px 20px 20px; height: calc(100vh - 248px); min-height: 440px; overflow-y: auto; overflow-wrap: anywhere; }
-.detail-empty { padding-top: 16px; }
+.detail { padding: 4px 20px 20px; overflow-y: auto; overflow-wrap: anywhere; container-type: inline-size; }
 
 /* Detail pane */
 .dhead { padding: 16px 0 4px; }
@@ -339,7 +350,6 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 .root.current li::before { border-top-style: dashed; }
 .root li .muted { white-space: nowrap; }
 .root .same { color: var(--muted); font-size: 12px; padding: 3px 0; }
-.root .self { font-weight: 600; }
 .trunk { margin-top: 0; padding: 8px 12px; background: var(--primary); color: var(--primary-fg); border-radius: 0 0 var(--radius-card) var(--radius-card);
   display: flex; gap: 8px; align-items: baseline; font-weight: 600; }
 .trunk .muted { color: inherit; opacity: .7; font-weight: 400; }
@@ -348,7 +358,7 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 
 /* Tree view */
 .tscroll:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.trow { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; padding-right: 12px; cursor: pointer;
+.trow { position: relative; display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; padding-right: 12px; cursor: pointer;
   border-bottom: 1px solid var(--rule); font: 12px var(--mono); overflow: hidden; }
 .trow:hover { background: var(--raised); }
 .trow.sel { background: var(--active); box-shadow: inset 2px 0 0 var(--accent); font-weight: 600; }
@@ -367,7 +377,7 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 @media (max-width: 900px) {
   .triage, .triage.tree { grid-template-columns: minmax(0, 1fr); }
   .queue { height: 60vh; }
-  .detail { height: auto; max-height: none; }
+  .detail { overflow-y: visible; }
 }
 @media (max-width: 640px) {
   :root { --pad: 16px; --inset: 0px; }
@@ -390,10 +400,8 @@ button.primary kbd { background: transparent; color: inherit; border-color: curr
 .keys div { display: flex; gap: 10px; align-items: baseline; }
 .keys dt { width: 22px; flex: none; }
 .keys dd { margin: 0; color: var(--muted); }
-@media (max-width: 640px) { .topbar .meta { display: none; } }
 
 /* Tree guides hang from each ancestor's twisty, drawn in the style of the parent mode being followed. */
-.trow { position: relative; }
 .trow .guide { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px solid var(--g, var(--border)); pointer-events: none; }
 .roots-original { --g: color-mix(in srgb, var(--root-original) 22%, transparent); }
 .roots-current { --g: color-mix(in srgb, var(--root-current) 55%, transparent); }
@@ -411,8 +419,6 @@ button.primary kbd { background: transparent; color: inherit; border-color: curr
 .export p { margin: 0; }
 .export .import-h { margin-top: 12px; }
 @media (max-width: 900px) { .confirmed-tab { grid-template-columns: minmax(0, 1fr); } }
-.root button.link { white-space: normal; overflow-wrap: anywhere; }
-.detail { container-type: inline-size; }
 @container (max-width: 420px) { .roots { grid-auto-flow: row; gap: 12px; } }
 .empty { margin: 8px 0 0; padding: 14px 16px; border: 1px dashed var(--control); border-radius: var(--radius-card); color: var(--muted); }
-button.primary.accent { justify-content: center; }
+

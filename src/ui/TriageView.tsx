@@ -4,7 +4,7 @@ import type { Severity } from '../rules/rules';
 import { DetailPane } from './DetailPane';
 import { QueueList, type QueueRow } from './QueueList';
 import { useSession } from './session-context';
-import { haystack, itemArgs, itemName, verdictKey, type TriageFilters } from './triage-model';
+import { haystack, itemArgs, itemName, triageAction, verdictKey, type TriageFilters } from './triage-model';
 
 const STATUS_FILTERS: TriageFilters['status'][] = ['all', 'unreviewed', 'confirmed', 'benign'];
 const SEVERITIES: Severity[] = ['high', 'med', 'low'];
@@ -80,16 +80,13 @@ export function TriageView() {
         : i < 0 ? (d === 1 ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, i + d));
       choose(rows[next]!.item);
     };
-    switch (e.key) {
-      case 'j': case 'ArrowDown': move(1); break;
-      case 'k': case 'ArrowUp': move(-1); break;
-      case 'c': case 'b': {
-        if (selKey === null) break;
-        void c.toggleVerdict(selKey, e.key === 'c' ? 'confirmed' : 'benign');
-        break;
-      }
-      case 'n': if (selKey !== null && noteRef.current) { e.preventDefault(); noteRef.current.focus(); } break;
-      case 't': if (selected !== null) c.showInTree(selected); break;
+    switch (triageAction(e.key)) {
+      case 'next': move(1); break;
+      case 'prev': move(-1); break;
+      case 'confirm': if (selKey !== null) void c.toggleVerdict(selKey, 'confirmed'); break;
+      case 'benign': if (selKey !== null) void c.toggleVerdict(selKey, 'benign'); break;
+      case 'note': if (selKey !== null && noteRef.current) { e.preventDefault(); noteRef.current.focus(); } break;
+      case 'tree': if (selected !== null) c.showInTree(selected); break;
     }
   };
   const onKeyRef = useRef(onKey);

@@ -1,4 +1,4 @@
-import { useId, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 
 /** The mark: one limb, two roots that reached the ground and thickened into trunks, two still hanging. */
 export function Mark({ size = 20 }: { size?: number }) {
@@ -24,16 +24,6 @@ export function Frame({ children }: { children: ReactNode }) {
       <header className="topbar"><Wordmark /></header>
       <main className="sheet">{children}</main>
     </div>
-  );
-}
-
-/** Line samples for the three roots, drawn exactly as the Roots panel draws them. */
-export function RootSwatch({ kind }: { kind: 'original' | 'current' | 'responsible' }) {
-  return (
-    <svg viewBox="0 0 28 10" aria-hidden="true">
-      <line x1="0" y1="5" x2="28" y2="5" strokeWidth="2.5" stroke={`var(--root-${kind})`}
-        strokeDasharray={kind === 'current' ? '5 3' : undefined} />
-    </svg>
   );
 }
 

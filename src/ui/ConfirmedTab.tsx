@@ -29,25 +29,15 @@ export function ImportSession() {
   );
 }
 
-export function ConfirmedTab() {
+/** Downloads the open session as a JSON file, with the export options chosen on the Confirmed tab. */
+export function useSaveSession(): { save(): Promise<void>; error: string | null } {
   const c = useSession();
   const [error, setError] = useState<string | null>(null);
   const session = c.session!;
-  const { includeEnv, redactArgs } = c.exportOpts;
-  const fileName = (fp: string): string => c.capRecs.find(r => r.fingerprint === fp)?.fileName ?? 'unknown capture';
-  const confirmed = c.allVerdicts
-    .filter(v => v.status === 'confirmed')
-    .sort((a, b) => fileName(a.fingerprint).localeCompare(fileName(b.fingerprint)) || a.snapshot.name.localeCompare(b.snapshot.name));
-
-  /** exportSession adds process details only for loaded captures; a launch item (key `i:…`) has no process, so none to add. */
-  const isLaunchItem = (key: string): boolean => key.startsWith('i:');
-  const leftOut = confirmed.filter(v => !isLaunchItem(v.procKey) && !c.captures.has(v.fingerprint)).length;
-  const hasLaunchItems = confirmed.some(v => isLaunchItem(v.procKey));
-
-  const doExport = async () => {
+  const save = async () => {
     setError(null);
     try {
-      const data = await exportSession(c.store, session.id, { includeEnv, redactArgs }, c.captures);
+      const data = await exportSession(c.store, session.id, c.exportOpts, c.captures);
       const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
       const a = document.createElement('a');
       a.href = url;
@@ -60,6 +50,22 @@ export function ConfirmedTab() {
       setError(e instanceof Error ? e.message : String(e));
     }
   };
+  return { save, error };
+}
+
+export function ConfirmedTab() {
+  const c = useSession();
+  const { save: doExport, error } = useSaveSession();
+  const { includeEnv, redactArgs } = c.exportOpts;
+  const fileName = (fp: string): string => c.capRecs.find(r => r.fingerprint === fp)?.fileName ?? 'unknown capture';
+  const confirmed = c.allVerdicts
+    .filter(v => v.status === 'confirmed')
+    .sort((a, b) => fileName(a.fingerprint).localeCompare(fileName(b.fingerprint)) || a.snapshot.name.localeCompare(b.snapshot.name));
+
+  /** exportSession adds process details only for loaded captures; a launch item (key `i:…`) has no process, so none to add. */
+  const isLaunchItem = (key: string): boolean => key.startsWith('i:');
+  const leftOut = confirmed.filter(v => !isLaunchItem(v.procKey) && !c.captures.has(v.fingerprint)).length;
+  const hasLaunchItems = confirmed.some(v => isLaunchItem(v.procKey));
 
   return (
     <div className="confirmed-tab">

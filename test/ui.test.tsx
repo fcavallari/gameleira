@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { File as NodeFile } from 'node:buffer';
 import { IDBFactory } from 'fake-indexeddb';
 import { useMemo, useState } from 'react';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { loadCapture, type LoadedCapture } from '../src/ingest/load';
@@ -204,6 +204,89 @@ test('switching to a capture that is not loaded shows the re-add prompt instead 
   expect(screen.queryByText(/^Triage:/)).not.toBeInTheDocument();
   expect(screen.queryByRole('group', { name: 'Capture counts' })).not.toBeInTheDocument();
   expect(demo.fingerprint).not.toBe('other-fp');
+});
+
+test('Save session, beside the session name, downloads the session while triaging', async () => {
+  render(<App />);
+  await newSession('lab');
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
+  await headerShows('111 events');
+  const clicked: string[] = [];
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) { clicked.push(this.download); });
+  const before = vi.mocked(URL.createObjectURL).mock.calls.length;
+  await user.click(screen.getByRole('button', { name: 'Save session' }));
+  await waitFor(() => { expect(clicked).toEqual(['lab.gameleira-session.json']); });
+  const saved = JSON.parse(await readBlob(vi.mocked(URL.createObjectURL).mock.calls[before]![0] as Blob)) as { format: string };
+  expect(saved.format).toBe('gameleira-session');
+});
+
+test('beside Save session, a warning says the file holds command lines until redaction is ticked on the Confirmed tab', async () => {
+  render(<App />);
+  await newSession('lab');
+  expect(await screen.findByText(/Save session includes full command lines, which can hold secrets/)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Confirmed tab' }));
+  expect(screen.queryByText(/Save session includes/)).not.toBeInTheDocument();
+  await user.click(screen.getByLabelText(/redact command-line arguments/i));
+  await user.click(screen.getByRole('tab', { name: 'Triage' }));
+  expect(screen.getByText('Save session redacts command-line arguments.')).toBeInTheDocument();
+});
+
+test('with more than one capture, the list of captures and their counts stays on screen after they load', async () => {
+  render(<App />);
+  await newSession('lab');
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
+  await headerShows('111 events');
+  expect(screen.queryByRole('list', { name: 'Captures' })).not.toBeInTheDocument();   // one capture: the counts above say it all
+  await user.upload(screen.getByLabelText(/capture files/i), dropped('synthetic-lab.jsonl'));
+  const list = within(await screen.findByRole('list', { name: 'Captures' }));
+  expect(list.getAllByRole('listitem')).toHaveLength(2);
+  expect(list.getByText(/^synthetic-lab-2\.jsonl · 111 events/)).toBeInTheDocument();
+});
+
+test('a file dropped on the page is a capture on Triage, and is not taken for one on the Confirmed tab', async () => {
+  render(<App />);
+  await newSession('lab');
+  const heading = await screen.findByRole('heading', { name: 'lab' });
+  const drag = () => ({ dataTransfer: { types: ['Files'], files: [dropped('synthetic-lab-2.jsonl')], dropEffect: 'copy' } });
+  await user.click(screen.getByRole('tab', { name: 'Confirmed' }));
+  fireEvent.dragEnter(heading, drag());
+  fireEvent.dragOver(heading, drag());
+  expect(document.querySelector('.sheet.over')).toBeNull();
+  fireEvent.drop(heading, drag());
+  expect(runLoadMock).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole('tab', { name: 'Triage' }));
+  fireEvent.drop(heading, drag());
+  await headerShows('111 events');
+});
+
+test('the drop highlight stays while the drag crosses child elements, and goes when it leaves the page', async () => {
+  render(<App />);
+  await newSession('lab');
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
+  await headerShows('111 events');
+  const heading = screen.getByRole('heading', { name: 'lab' });
+  const tab = screen.getByRole('tab', { name: 'Tree' });
+  const drag = { dataTransfer: { types: ['Files'], files: [], dropEffect: 'copy' } };
+  const lit = () => document.querySelector('.sheet.over');
+  fireEvent.dragEnter(heading, drag);
+  fireEvent.dragOver(heading, drag);
+  expect(lit()).not.toBeNull();
+  fireEvent.dragEnter(tab, drag);       // into another element, then out of the first: no relatedTarget to go by
+  fireEvent.dragLeave(heading, drag);
+  expect(lit()).not.toBeNull();
+  fireEvent.dragLeave(tab, drag);
+  expect(lit()).toBeNull();
+});
+
+test('the Sessions list holds sessions only: the import block is beside it, not an item of it', async () => {
+  const store = await openStore();
+  await store.createSession('one');
+  render(<App />);
+  await screen.findByRole('button', { name: 'one' });
+  expect(within(screen.getByRole('list', { name: 'Sessions' })).getAllByRole('listitem')).toHaveLength(1);
+  expect(screen.getByRole('region', { name: 'Import a session' })).toBeInTheDocument();
+  expect(screen.getByText(/nothing is uploaded/)).toBeInTheDocument();
 });
 
 const seedVerdict = (sessionId: string, fingerprint: string, procKey: string, status: Verdict['status'], note: string): Verdict => ({
