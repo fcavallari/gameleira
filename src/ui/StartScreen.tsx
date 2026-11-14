@@ -4,7 +4,8 @@ import { findSavedCopy, folderSupported, permitted, type SavedCopy } from '../se
 import type { Session } from '../session/store';
 import { Canopy, RootField, RootSwatch, TRUNKS, Wordmark } from './Brand';
 import { ImportSession } from './ConfirmedTab';
-import { CommandBlock } from './SessionScreen';
+import { guideHref } from './route';
+import { CommandBlock, GuideLink } from './SessionScreen';
 import { StoreErrorBanner } from './StoreErrorBanner';
 import { useSession } from './session-context';
 
@@ -103,6 +104,7 @@ export function StartScreen() {
           <span className="mono">IndexedDB · this browser</span>
           {c.persisted !== null && <span>Storage: {c.persisted ? 'persistent' : 'best-effort'}</span>}
         </span>
+        <GuideLink />
       </header>
       <main className="sheet home">
         <div className="home-banner"><StoreErrorBanner /></div>
@@ -203,6 +205,8 @@ export function StartScreen() {
             <p className="small muted events"><span className="mono">fork</span>, <span className="mono">exec</span> and <span className="mono">exit</span> build
               the tree; <span className="mono">create</span>, <span className="mono">rename</span>, <span className="mono">unlink</span> and <span className="mono">setextattr</span> show
               what each process wrote; <span className="mono">btm_*</span> records login items, launch agents and daemons.</p>
+            <p className="small guide-pointer">New to macOS investigations? <a href={guideHref()}>Read the guide</a>: how to
+              capture, what the events and fields mean, what an intrusion looks like, and a safe practice run.</p>
           </section>
 
           <section className="howto contribute" aria-labelledby="contrib-h">
