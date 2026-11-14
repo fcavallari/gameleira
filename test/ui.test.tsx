@@ -964,14 +964,27 @@ test('long args truncate in queue row', async () => {
   expect(row.querySelector('.args')).toHaveClass('truncate');   // jsdom doesn't load styles.css; .truncate carries text-overflow: ellipsis
 }, 60_000);
 
-test('rows: persistence-only row, chain marker, status icon; nothing is selected until the user picks a row', async () => {
+test('rows: persistence-only row, status icon, no in-chain badge; nothing is selected until the user picks a row', async () => {
   renderTriage(await loadLab());
   const rows = await screen.findAllByRole('option');
   expect(rows.some(r => r.textContent?.includes('persistence: com.example.updater.wake.plist'))).toBe(true);
   const whoami = rows.find(r => r.textContent?.includes('whoami'))!;
-  expect(within(whoami).getByTitle(/part of a flagged chain/i)).toBeInTheDocument();
+  expect(within(whoami).queryByText('in chain')).not.toBeInTheDocument();
   expect(rows.every(r => r.getAttribute('aria-selected') === 'false')).toBe(true);
   expect(screen.getByText(/select a flagged process/i)).toBeInTheDocument();
+}, 60_000);
+
+test('"Show only in-chain processes" keeps exactly the rows queued for sitting in a flagged chain', async () => {
+  const cap = await loadLab();
+  renderTriage(cap);
+  const all = (await screen.findAllByRole('option')).length;
+  await user.click(screen.getByRole('checkbox', { name: /show only in-chain processes/i }));
+  const names = screen.getAllByRole('option').map(r => r.querySelector('.qname')!.textContent);
+  const inChain = cap.analysis.queue.filter(q => q.inFlaggedChain).length;
+  expect(names).toHaveLength(inChain);
+  expect(inChain).toBeGreaterThan(0);
+  expect(inChain).toBeLessThan(all);
+  expect(names).toContain('whoami');
 }, 60_000);
 
 test('detail sections: why, launched by, details, what it did, actions', async () => {

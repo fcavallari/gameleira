@@ -6,13 +6,13 @@
 :root {
   --frame: #eceee6;   --sheet: #ffffff;   --raised: #f4f5f0;  --active: #e4e8df;
   --border: #e0e3da;  --rule: #eef0ea;    --control: #c3c8bd;
-  --text: #141613;    --muted: #575c54;   --faint: #686d65;
+  --text: #141613;    --muted: #4f544c;   --faint: #5c6159;
   --primary: #1b1e1a; --primary-fg: #ffffff;
   --accent: #1d6b52;  --accent-pale: #e1eee7;  --leaf-deep: #12432f;  --limb: #3a3f37;
-  --root-original: #1b1e1a; --root-current: #8a8f86; --root-responsible: #1d6b52;
+  --root-original: #1b1e1a; --root-current: #7d8279; --root-responsible: #1d6b52;
   --high: #9b1c1c;    --high-bg: #fde6e2;  --high-mark: #cf2a1e;
   --med: #6e4500;     --med-bg: #f8ecd0;   --med-mark: #c98a12;
-  --low: #4a4f47;     --low-bg: #ebede6;
+  --low: #4a4f47;     --low-bg: #ebede6;  --low-mark: #8293a1;
   --danger: #b3261e;  --warn: #7a4a00;
   --drop: #e1eee7;
   --botanical: #cfe2d7; --botanical-2: #b8d3c4; --root-line: #c4ccc2; --node: #b97c0c;
@@ -29,13 +29,13 @@
   :root {
     --frame: #111512;   --sheet: #191f1b;   --raised: #202722;  --active: #28302a;
     --border: #2a332d;  --rule: #222a25;    --control: #3f4a43;
-    --text: #e8ece7;    --muted: #929c93;   --faint: #8a948b;
+    --text: #e8ece7;    --muted: #b4bdb4;   --faint: #a5afa6;
     --primary: #e8ece7; --primary-fg: #111512;
     --accent: #79cba8;  --accent-pale: #1e3529;  --leaf-deep: #254c3d;  --limb: #4a5a4f;
-    --root-original: #e8ece7; --root-current: #7c877e; --root-responsible: #79cba8;
+    --root-original: #e8ece7; --root-current: #97a198; --root-responsible: #79cba8;
     --high: #ffa196;    --high-bg: #3a1c19;  --high-mark: #f0594c;
     --med: #eebd5a;     --med-bg: #33280f;   --med-mark: #dda12b;
-    --low: #bfc6be;     --low-bg: #28302a;
+    --low: #bfc6be;     --low-bg: #28302a;  --low-mark: #6f8596;
     --danger: #ff8a80;  --warn: #eebd5a;
     --drop: #1e3529;
     --botanical: #254c3d; --botanical-2: #1d3b30; --root-line: #4b5a50; --node: #dda12b;
@@ -107,7 +107,9 @@ button.primary[aria-pressed="true"] { background: var(--primary); box-shadow: in
 button:disabled { opacity: .55; cursor: not-allowed; }
 label.inline { display: inline-flex; align-items: center; gap: 6px; }
 input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); margin: 0; }
-kbd { font: 11px var(--mono); border: 1px solid var(--control); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--muted); background: var(--sheet); }
+/* Keys drawn as keycaps: a rounded cap, a fine edge and a lip at the bottom. */
+kbd { display: inline-block; min-width: 22px; padding: 1px 6px; font: 600 11px/18px var(--mono); text-align: center; color: var(--text);
+  background: var(--raised); border: 1px solid var(--control); border-radius: 5px; box-shadow: 0 2px 0 var(--control); vertical-align: 1px; }
 progress { height: 6px; accent-color: var(--accent); }
 
 .list { list-style: none; margin: 8px 0; padding: 0; }
@@ -159,11 +161,11 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 .spanel { margin-top: 20px; background: var(--raised); border-radius: 12px; padding: 4px 8px 8px; }
 .spanel.empty-panel { background: none; padding: 0; }
 .srow { display: grid; grid-template-columns: minmax(0, 1fr) 128px 168px 136px; align-items: center; gap: 24px; }
-.shdr { padding: 12px 14px 10px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); }
+.shdr { padding: 10px 12px 8px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); }
 .stree .node { position: relative; }
-.sessions > li.srow { min-height: 64px; padding: 0 14px; border-radius: var(--radius-card); transition: background-color .15s; }
+.sessions > li.srow { min-height: 52px; padding: 0 12px; border-radius: var(--radius-card); transition: background-color .15s; }
 .sessions > li.srow:hover { background: var(--active); }
-.sessions > li.srow + li.srow::after { content: ''; position: absolute; left: 14px; right: 14px; top: 0; border-top: 1px solid var(--border); }
+.sessions > li.srow + li.srow::after { content: ''; position: absolute; left: 12px; right: 12px; top: 0; border-top: 1px solid var(--border); }
 /* Each session is a node on the root, joined to it by a short rootlet. */
 .stree .node::before { content: ''; position: absolute; left: -34px; top: 50%; width: 10px; height: 10px; margin-top: -5px;
   border-radius: 50%; background: var(--node); transition: transform .15s; }
@@ -171,7 +173,7 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 /* Rows sit 8px inside the panel, so their node and rootlet reach 8px further left to meet the root. */
 .spanel .sessions > li::before { left: -42px; }
 .sessions > li > .sname::before { content: ''; position: absolute; left: -37px; top: 50%; width: 43px; border-top: 2px solid var(--limb); }
-.sessions .sname { font-size: 16px; font-weight: 600; text-decoration: none; padding: 10px 0; justify-self: start; max-width: 100%; white-space: nowrap;
+.sessions .sname { font-size: 16px; font-weight: 600; text-decoration: none; padding: 6px 0; justify-self: start; max-width: 100%; white-space: nowrap;
   color: var(--text); transition: color .15s; }
 .sessions .sname::after { content: '→'; display: inline-block; margin-left: 8px; color: var(--accent); opacity: 0; transform: translateX(-4px);
   transition: opacity .15s, transform .15s; }
@@ -181,8 +183,11 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 .sessions .num { font-size: 15px; }
 .sessions .num .muted { font-size: 13px; }
 .sessions .when { font-size: 12px; }
-.sessions .acts { display: flex; gap: 2px; justify-content: flex-end; }
-.sessions .acts button { opacity: .6; font-size: 12px; min-height: 28px; padding: 0 8px; }
+.sessions .acts { display: flex; gap: 0; justify-content: flex-end; align-items: center; }
+/* A rule between Rename and Delete, with room on both sides, so a click meant for one does not land on the other. */
+.sessions .acts button + button { position: relative; margin-left: 13px; }
+.sessions .acts button + button::before { content: ''; position: absolute; left: -7px; top: 7px; bottom: 7px; border-left: 1px solid var(--control); }
+.sessions .acts button { opacity: .75; font-size: 12px; min-height: 28px; padding: 0 8px; }
 .sessions li:hover .acts button, .sessions .acts button:focus-visible { opacity: 1; }
 .sessions li.editing { padding: 4px 12px 12px; }
 .sessions li.editing::before { top: 34px; }
@@ -205,19 +210,21 @@ button.primary.accent:hover { background: var(--text); border-color: var(--text)
 .ground { border-top: 3px solid var(--limb); padding: 0 var(--pad) 24px 0; }
 .caption { margin: 8px 0 0; font-size: 12px; line-height: 1.5; color: var(--muted); max-width: 44ch; }
 
-@media (max-width: 1100px) {
-  .sheet.home { grid-template-columns: minmax(0, 1fr) 220px; column-gap: 32px; }
-  .srow { grid-template-columns: minmax(0, 1fr) 104px 150px; gap: 16px; }
-  .srow .acts { grid-column: 1 / -1; justify-content: flex-start; margin: -8px 0 8px; }
-  .shdr span:last-child { display: none; }
-}
-@media (max-width: 860px) {
+/* Below 1200px the page is one column: crown, limb, the sessions, then the root field as its own band underneath,
+   hanging from a second stretch of limb, full width. */
+@media (max-width: 1199px) {
   .sheet.home { grid-template-columns: minmax(0, 1fr); }
   .intro { grid-row: 2; padding: 8px 0 16px; }
-  .canopy { grid-row: 3; width: calc(100% + var(--pad)); height: 140px; }
+  .canopy { grid-row: 3; width: calc(100% + var(--pad)); height: 160px; }
   .limb { grid-row: 4; }
   .workspace { grid-row: 5; }
-  .field { display: none; }
+  .field { grid-column: 1; grid-row: 6; grid-template-rows: 280px auto; margin: 0 calc(-1 * var(--pad)); border-top: 8px solid var(--limb); }
+  .ground { padding-left: var(--pad); }
+}
+@media (max-width: 760px) {
+  .srow { grid-template-columns: minmax(0, 1fr) 104px 150px; gap: 16px; }
+  .srow .acts { grid-column: 1 / -1; justify-content: flex-start; margin: -6px 0 6px; }
+  .shdr span:last-child { display: none; }
 }
 @media (max-width: 640px) {
   .home-title { font-size: 36px; }
@@ -404,8 +411,15 @@ button.primary kbd { background: transparent; color: inherit; border-color: curr
 .detail-empty p { margin: 0; }
 .lead-figure { font-size: 16px; }
 .lead-figure .num { display: block; font: 500 34px/1.1 var(--brand); letter-spacing: -0.01em; }
-.sev-split { display: flex; gap: 18px; font-size: 14px; }
-.sev-split .num { font-weight: 600; }
+.sev-split { display: grid; gap: 6px; max-width: 520px; margin-top: 4px; }
+.sevbar-labels, .sevbar { display: grid; gap: 3px; }
+.sevbar-labels span { font-size: 13px; white-space: nowrap; }
+.sevbar-labels b { font-weight: 700; color: var(--text); margin-left: 2px; }
+.sevbar { height: 12px; }
+.sevbar .seg { border-radius: 2px; }
+.sevbar .seg.high { background: var(--high-mark); }
+.sevbar .seg.med { background: var(--med-mark); }
+.sevbar .seg.low { background: var(--low-mark); }
 .keys { margin: 6px 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px; }
 .keys div { display: flex; gap: 10px; align-items: baseline; }
 .keys dt { width: 22px; flex: none; }
@@ -472,14 +486,22 @@ button.primary.accent.new { min-height: 40px; padding: 0 18px 0 14px; gap: 8px; 
 .specimen:hover .swatch { transform: scaleX(1.25); }
 
 /* Hovering a label brings its trunk forward and lets the others recede. */
-.trunk .stem { stroke-width: 5px; transition: stroke-width .25s, opacity .25s; }
-.trunk line, .trunk circle { transition: opacity .25s; }
-.field:has(.specimen.original:hover) .trunk:not(.original),
-.field:has(.specimen.current:hover) .trunk:not(.current),
-.field:has(.specimen.responsible:hover) .trunk:not(.responsible) { opacity: .25; }
-.field:has(.specimen.original:hover) .trunk.original .stem,
-.field:has(.specimen.current:hover) .trunk.current .stem,
-.field:has(.specimen.responsible:hover) .trunk.responsible .stem { stroke-width: 8px; }
+.ftrunk .stem { stroke-width: 5px; transition: stroke-width .25s, opacity .25s; }
+.ftrunk line, .ftrunk circle, .field .hang, .specimen { transition: opacity .25s, stroke-width .25s, background-color .2s; }
+.specimen { border-radius: 4px; outline-offset: 3px; }
+.specimen:is(:hover, :focus-visible) { background: var(--raised); }
+/* Pointing at (or tabbing to) a relationship brings its trunk, leader and splayed base forward; the rest recede. */
+.field:has(.specimen:is(:hover, :focus-visible)) .hang { opacity: .3; }
+.field:has(.specimen:is(:hover, :focus-visible)) .specimen:not(:hover, :focus-visible) { opacity: .45; }
+.field:has(.specimen.original:is(:hover, :focus-visible)) .ftrunk:not(.original),
+.field:has(.specimen.current:is(:hover, :focus-visible)) .ftrunk:not(.current),
+.field:has(.specimen.responsible:is(:hover, :focus-visible)) .ftrunk:not(.responsible) { opacity: .2; }
+.field:has(.specimen.original:is(:hover, :focus-visible)) .ftrunk.original .stem,
+.field:has(.specimen.current:is(:hover, :focus-visible)) .ftrunk.current .stem,
+.field:has(.specimen.responsible:is(:hover, :focus-visible)) .ftrunk.responsible .stem { stroke-width: 9px; }
+.field:has(.specimen.original:is(:hover, :focus-visible)) .ftrunk.original line:not(.stem),
+.field:has(.specimen.current:is(:hover, :focus-visible)) .ftrunk.current line:not(.stem),
+.field:has(.specimen.responsible:is(:hover, :focus-visible)) .ftrunk.responsible line:not(.stem) { stroke-width: 3.5px; }
 
 /* Restrained motion: hanging roots grow once, the trunk nodes and the root's first node breathe slowly. */
 @keyframes root-grow { from { height: 0; } }
@@ -488,21 +510,62 @@ button.primary.accent.new { min-height: 40px; padding: 0 18px 0 14px; gap: 8px; 
 .field .hang rect { animation: root-grow 1.4s cubic-bezier(.2, .7, .2, 1) both; animation-delay: inherit; }
 .field .hang circle { animation: node-appear .6s ease-out 1.2s both; }
 .field .pulse { transform-box: fill-box; transform-origin: center; animation: node-breathe 4s ease-in-out infinite; }
-.field .trunk.current .pulse { animation-delay: 1.3s; }
-.field .trunk.responsible .pulse { animation-delay: 2.6s; }
+.field .ftrunk.current .pulse { animation-delay: 1.3s; }
+.field .ftrunk.responsible .pulse { animation-delay: 2.6s; }
 .limb::before { animation: node-breathe 4s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) {
   .field .hang rect, .field .hang circle, .field .pulse, .limb::before { animation: none; }
   .sessions .sname::after { transition: none; }
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 760px) {
   .steps { grid-template-columns: minmax(0, 1fr); gap: 14px; border-top: 0; border-left: 2px solid var(--root-line); padding-left: 18px; }
   .steps li { padding-top: 0; }
   .steps li::before { top: 4px; left: -24px; }
-  .specimen .swatch { display: none; }
 }
 @media (max-width: 640px) {
   .cmdbar span { display: none; }
   .cmdbar { justify-content: flex-end; }
 }
+/* On a phone the trunks sit too close for leaders: the relationships become a plain legend under the ground line. */
+@media (max-width: 640px) {
+  .specimens { height: auto; display: grid; gap: 6px; justify-items: start; padding-top: 12px; }
+  .specimen, .specimen.current, .specimen.responsible { position: static; transform: none; padding: 2px 6px 2px 0; }
+  .specimen::before { display: none; }
+}
+
+/* Dark: severity pills as solid, saturated fills with dark ink, so they stand clear of the charcoal (text over 5:1). */
+@media (prefers-color-scheme: dark) {
+  .badge.sev-high { background: #ef5a50; color: #1a0605; }
+  .badge.sev-med { background: #f2b53a; color: #1f1500; }
+  .badge.sev-low { background: #3a443d; color: #dfe5de; }
+}
+
+/* Save session's (i): the warning and the save folder, on hover, on focus, or pinned open by a click. */
+.save-group { display: inline-flex; align-items: center; gap: 6px; }
+.info { position: relative; display: inline-flex; }
+.info-btn { width: 20px; min-height: 20px; height: 20px; padding: 0; border-radius: 50%; justify-content: center;
+  font: italic 600 12px/1 Georgia, "Times New Roman", serif; color: var(--muted); border-color: var(--control); background: none; }
+.info.attention .info-btn { color: var(--warn); border-color: var(--warn); }
+.info-btn:hover { color: var(--text); }
+.info-pop { display: none; position: absolute; z-index: 20; top: calc(100% + 8px); right: -6px; width: 320px; padding: 10px 12px;
+  background: var(--raised); border: 1px solid var(--border); border-radius: var(--radius-card); box-shadow: 0 8px 24px rgb(0 0 0 / .28);
+  color: var(--text); line-height: 1.5; }
+.info-pop::before { content: ''; position: absolute; top: -12px; left: 0; right: 0; height: 12px; }
+.info:hover .info-pop, .info:focus-within .info-pop, .info.open .info-pop { display: block; }
+
+/* Capture tabs: the active capture is a filled pill with a mint underline. */
+.captures { gap: 6px; }
+.captures .captab { position: relative; min-height: 30px; padding: 0 14px; border: 0; border-radius: 999px;
+  background: none; color: var(--muted); font-size: 13px; }
+.captures .captab:hover { background: var(--raised); color: var(--text); }
+.captures .captab[aria-pressed="true"] { background: color-mix(in srgb, var(--text) 11%, var(--sheet)); color: var(--text); font-weight: 600; }
+.captures .captab[aria-pressed="true"]::after { content: ''; position: absolute; left: 14px; right: 14px; bottom: 3px; border-bottom: 2px solid var(--accent); }
+.captures li.active { font-weight: inherit; }
+.captures li:not(:has(.captab)) { align-self: center; padding: 0 8px; }
+
+/* The full text of a cut-short cell, under the pointer. */
+.ftip { position: fixed; z-index: 30; max-width: 720px; padding: 6px 10px; border-radius: var(--radius-control);
+  background: var(--primary); color: var(--primary-fg); font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all;
+  pointer-events: none; box-shadow: 0 6px 18px rgb(0 0 0 / .25); }
+.qtools .chain-only { color: var(--text); }

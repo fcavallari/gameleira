@@ -24,7 +24,7 @@ export function TriageView() {
   const c = useSession();
   const { capture, triage, selected, selectedItem } = c;
   const { verdicts } = c;
-  const { status, sev, search, showHidden } = c.triageFilters;
+  const { status, sev, search, showHidden, chainOnly } = c.triageFilters;
   const setFilters = c.updateTriageFilters;
   const noteRef = useRef<HTMLTextAreaElement>(null);
   /** Where the selected row last stood in the list, for when a verdict or routine mark takes it out of the list. */
@@ -45,13 +45,14 @@ export function TriageView() {
     const out: QueueRow[] = [];
     for (const item of base) {
       if (!sev.has(item.severity)) continue;
+      if (chainOnly && !item.inFlaggedChain) continue;
       const st = verdicts.get(verdictKey(item))?.status ?? 'unreviewed';
       if (status !== 'all' && st !== status) continue;
       if (needle && !(haystacks.get(item.key) ?? '').includes(needle)) continue;
       out.push({ item, name: itemName(capture, item), args: itemArgs(capture, item), status: st, routine: !visible.has(item.key), routineKept: triage.kept.get(item.key) ?? null });
     }
     return out;
-  }, [capture, triage, verdicts, status, sev, search, showHidden, haystacks]);
+  }, [capture, triage, verdicts, status, sev, search, showHidden, chainOnly, haystacks]);
 
   const selKey: string | null = selected ?? selectedItem;
   const selectedRowKey = rows.find(r => verdictKey(r.item) === selKey)?.item.key ?? null;
@@ -125,6 +126,11 @@ export function TriageView() {
                 <input type="checkbox" checked={sev.has(s)} onChange={() => { toggleSev(s); }} />{s}
               </label>
             ))}
+          </div>
+          <div className="row">
+            <label className="inline chain-only" title="Rows queued because they ran under, or as part of, something that was flagged">
+              <input type="checkbox" checked={chainOnly} onChange={e => { setFilters({ chainOnly: e.target.checked }); }} />Show only in-chain processes
+            </label>
           </div>
         </div>
         <QueueList rows={rows} selectedKey={selectedRowKey} onSelect={choose} />
