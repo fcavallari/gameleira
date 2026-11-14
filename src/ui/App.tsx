@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { openStore, type Store } from '../session/store';
 import { Frame } from './Brand';
 import { ErrorBoundary } from './ErrorBoundary';
+import { GuideScreen } from './GuideScreen';
+import { useGuideSection } from './route';
 import { SessionProvider, useSession } from './session-context';
 import { SessionScreen } from './SessionScreen';
 import { StartScreen } from './StartScreen';
@@ -9,8 +11,14 @@ import { StartScreen } from './StartScreen';
 export { SessionContext, SessionProvider, useSession } from './session-context';
 export type { SessionCtx, View, Progress } from './session-context';
 
+/**
+ * The guide replaces the screen while it is open (the screens' key handlers must not act on keys typed in it); the
+ * session and its loaded captures live in the context above, so closing the guide comes back to them as they were.
+ */
 function Screens() {
   const { session } = useSession();
+  const guide = useGuideSection();
+  if (guide !== null) return <GuideScreen section={guide} />;
   return session ? <SessionScreen /> : <StartScreen />;
 }
 

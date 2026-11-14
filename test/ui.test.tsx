@@ -32,6 +32,8 @@ import { fixture, type FixtureName } from './fixtures';
 import { exportSession, saveFileName } from '../src/session/export';
 import type { DirHandle } from '../src/session/folder';
 import { fakeFolder } from './fake-folder';
+import { GUIDE_SECTIONS, STAGES } from '../src/ui/GuideScreen';
+import { RULES } from '../src/rules/rules';
 
 // The real runLoad starts an inline Worker, which jsdom lacks; delegate to loadCapture instead.
 vi.mock('../src/ingest/run', () => ({ runLoad: vi.fn() }));
@@ -114,7 +116,7 @@ beforeEach(() => {
   captureFileMemory.clear();
   delete (window as { showOpenFilePicker?: unknown }).showOpenFilePicker;
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); history.replaceState(null, '', location.pathname); });
 
 /** The header's counts group; waits until it shows `text`. */
 async function headerShows(text: string | RegExp): Promise<void> {
@@ -2143,4 +2145,41 @@ test('without file handles (Safari, Firefox) nothing is remembered and there is 
   await headerShows('111 events');
   expect(captureFileMemory.size).toBe(0);
   expect(screen.queryByRole('button', { name: /Reload/ })).not.toBeInTheDocument();
+});
+
+test('the guide opens from the home page, shows every section and rule, and Back to the app returns home', async () => {
+  render(<App />);
+  await user.click(await screen.findByRole('link', { name: 'Guide' }));
+  expect(await screen.findByRole('heading', { level: 1, name: /hunting macos threats/i })).toBeInTheDocument();
+  const toc = screen.getByRole('navigation', { name: 'Guide contents' });
+  expect(within(toc).getAllByRole('link')).toHaveLength(GUIDE_SECTIONS.length);
+  for (const s of GUIDE_SECTIONS) expect(document.getElementById(`g-${s.id}`), s.id).not.toBeNull();
+  for (const r of RULES) expect(document.getElementById(`g-rule-${r.id}`), r.id).not.toBeNull();
+  expect(screen.getAllByText(CMD).length).toBeGreaterThan(0);   // the capture command is the app's own
+  await user.click(screen.getByRole('button', { name: 'Back to the app' }));
+  expect(await screen.findByRole('heading', { name: 'Sessions' })).toBeInTheDocument();
+});
+
+test('a link to a guide section opens the guide directly', async () => {
+  history.replaceState(null, '', '#guide/practice');
+  render(<App />);
+  expect(await screen.findByRole('navigation', { name: 'Guide contents' })).toBeInTheDocument();
+});
+
+test('opening the guide from a session and coming back keeps the session, its capture and the tab', async () => {
+  render(<App />);
+  await newSession('lab');
+  await user.upload(await screen.findByLabelText(/capture files/i), dropped('synthetic-lab-2.jsonl'));
+  await headerShows('111 events');
+  await user.click(screen.getByRole('tab', { name: 'Tree' }));
+  await user.click(screen.getByRole('link', { name: 'Guide' }));
+  await screen.findByRole('navigation', { name: 'Guide contents' });
+  await user.click(screen.getByRole('button', { name: 'Back to the app' }));
+  expect(await screen.findByRole('heading', { name: 'lab' })).toBeInTheDocument();
+  await headerShows('111 events');
+  expect(screen.getByRole('tree', { name: 'Process tree' })).toBeInTheDocument();
+});
+
+test('the guide places every rule in exactly one stage of an intrusion', () => {
+  expect(STAGES.flatMap(s => s.rules).sort()).toEqual(RULES.map(r => r.id).sort());
 });

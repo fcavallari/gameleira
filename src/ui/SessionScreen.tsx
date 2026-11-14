@@ -2,6 +2,7 @@ import { useRef, useState, type DragEvent } from 'react';
 import { handlesSupported, pickCaptureFiles, sourcedFromDrop } from '../session/capture-files';
 import { Mark, Wordmark } from './Brand';
 import { ConfirmedTab, SaveFolderNote, useSaveSession } from './ConfirmedTab';
+import { guideHref } from './route';
 import { StoreErrorBanner } from './StoreErrorBanner';
 import { TreeView } from './TreeView';
 import { TriageView } from './TriageView';
@@ -19,6 +20,11 @@ const TABS: { id: View; label: string }[] = [
 ];
 
 const fmt = (n: number): string => n.toLocaleString('en-US');
+
+/** The guide's door, at the right of the top bar on every screen. */
+export function GuideLink() {
+  return <a className="guide-link" href={guideHref()}>Guide</a>;
+}
 
 /** The capture command as a terminal block, with its Copy button in the block's own header. */
 export function CommandBlock() {
@@ -49,6 +55,8 @@ export function CaptureCommand({ hint = 'Run this, stop it with Ctrl-C, then dro
         <li><code>create</code>, <code>rename</code>, <code>unlink</code> and <code>setextattr</code> show what each process wrote.</li>
         <li><code>btm_*</code> records login items, launch agents and daemons.</li>
       </ul>
+      <p className="small guide-pointer">First time? The <a href={guideHref('capture')}>guide</a> covers Full Disk Access,
+        every <code>eslogger</code> option and a safe practice capture.</p>
     </div>
   );
 }
@@ -267,6 +275,7 @@ export function SessionScreen() {
         </nav>
         <span className="spacer" />
         <span className="meta wide">Everything stays in this browser</span>
+        <GuideLink />
       </header>
       <main className={`sheet${over && !bigDrop ? ' over' : ''}`}>
         <StoreErrorBanner />
