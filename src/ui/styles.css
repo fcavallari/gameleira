@@ -460,6 +460,8 @@ button.primary.accent.new { min-height: 40px; padding: 0 18px 0 14px; gap: 8px; 
 .steps li strong { display: block; color: var(--text); font-size: 14px; margin-bottom: 2px; }
 .steps li::before { content: ''; position: absolute; top: -6px; left: 0; width: 10px; height: 10px; border-radius: 50%; background: var(--node); }
 .howto .events { margin: 0; }
+.contribute a { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.contribute a:hover { color: var(--text); }
 
 .cmdblock { border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--frame); overflow: hidden; }
 .cmdbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 4px 4px 14px;

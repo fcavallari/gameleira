@@ -8,6 +8,9 @@ import { CommandBlock } from './SessionScreen';
 import { StoreErrorBanner } from './StoreErrorBanner';
 import { useSession } from './session-context';
 
+/** Where the project lives, for the invitation to contribute. */
+const REPO_URL = 'https://github.com/fcavallari/gameleira';
+
 const when = (iso: string): string => {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
@@ -200,6 +203,15 @@ export function StartScreen() {
             <p className="small muted events"><span className="mono">fork</span>, <span className="mono">exec</span> and <span className="mono">exit</span> build
               the tree; <span className="mono">create</span>, <span className="mono">rename</span>, <span className="mono">unlink</span> and <span className="mono">setextattr</span> show
               what each process wrote; <span className="mono">btm_*</span> records login items, launch agents and daemons.</p>
+          </section>
+
+          <section className="howto contribute" aria-labelledby="contrib-h">
+            <h2 id="contrib-h">Help it grow</h2>
+            <p className="muted">Gameleira is open source, under the MIT licence. If a rule misfires, a capture will not load, or you
+              know a technique it should catch, open an issue or send a pull request. New rules, fixes and better explanations
+              are all welcome.</p>
+            <p><a href={REPO_URL} target="_blank" rel="noreferrer noopener">
+              <span className="mono">github.com/fcavallari/gameleira</span></a></p>
           </section>
         </section>
 
