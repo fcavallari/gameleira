@@ -98,7 +98,8 @@ const MAX_OTHER_SHOWN = 5;
  */
 export function captureInfo(stats: CaptureStats): { line: string | null; older: boolean } {
   const parts: string[] = [];
-  if (stats.badLines > 0) parts.push(`${stats.badLines.toLocaleString('en-US')} unreadable ${stats.badLines === 1 ? 'line' : 'lines'}`);
+  const unit = stats.layout === 'objects' ? 'record' : 'line';
+  if (stats.badLines > 0) parts.push(`${stats.badLines.toLocaleString('en-US')} unreadable ${unit}${stats.badLines === 1 ? '' : 's'}`);
   const other = Object.entries(stats.otherEvents).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
   if (other.length > 0) {
     const shown = other.slice(0, MAX_OTHER_SHOWN).map(([t, n]) => `${t} ×${n.toLocaleString('en-US')}`);

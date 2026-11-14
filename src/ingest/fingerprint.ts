@@ -1,3 +1,5 @@
+import { streamObjects, type Layout } from './records';
+
 /** The hash covers this many complete lines (fewer when the file has fewer). */
 const HEAD_LINES = 200;
 /** Never read more than this much of the head, however long the lines are. */
@@ -48,7 +50,9 @@ export async function fingerprint(
   blob: Blob,
   firstSeq: number | null,
   firstTime: string | null,
+  layout: Layout = 'lines',
 ): Promise<string> {
+  if (layout === 'objects') return fingerprintObjects(blob, firstSeq, firstTime);
   const hash = new Fnv64();
   const limit = Math.min(blob.size, HEAD_BYTES);
   let pending: Uint8Array = new Uint8Array(0);   // bytes of a line whose end has not been read yet
@@ -70,5 +74,26 @@ export async function fingerprint(
     pending = pending.subarray(start);
   }
   if (lines === 0) hash.add(pending);
+  return `${hash.hex()}:${firstSeq}:${firstTime}`;
+}
+
+/**
+ * The same identity for a capture read as objects (a pretty-printed export): a hash of its first 200 complete records,
+ * since 200 lines would cover only a couple of pretty-printed events. CRs are dropped, so CRLF and LF files are the same
+ * capture (a CR inside a JSON string is always escaped). Reads at most 4 MiB, and a record cut by that limit or by the
+ * end of the file is left out. A head with no complete record is hashed as it is.
+ */
+async function fingerprintObjects(blob: Blob, firstSeq: number | null, firstTime: string | null): Promise<string> {
+  const hash = new Fnv64();
+  const encoder = new TextEncoder();
+  const head = blob.slice(0, Math.min(blob.size, HEAD_BYTES));
+  let records = 0;
+  await streamObjects(head, (text, complete) => {
+    if (!complete || records >= HEAD_LINES) return;
+    hash.add(encoder.encode(text.replace(/\r/g, '')));
+    hash.add(Uint8Array.of(NEWLINE));
+    records++;
+  }, undefined, CHUNK);
+  if (records === 0) hash.add(new Uint8Array(await head.arrayBuffer()));
   return `${hash.hex()}:${firstSeq}:${firstTime}`;
 }

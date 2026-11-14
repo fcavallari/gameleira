@@ -14,7 +14,7 @@ test('single self-contained file with CSP', () => {
   expect(html).not.toContain('__FIXTURES_DIR__'); // dev autoload stripped
   expect(fs.readdirSync('dist')).toEqual(['index.html']);
   expect(html).toContain('worker');
-  expect(html).toContain('No eslogger events found'); // the ingest worker (runLoad) is bundled
+  expect(html).toContain('No eslogger or Mac Monitor events found'); // the ingest worker (runLoad) is bundled
   // The dev fixture path must not leak. (A bare '/Users/' check is impossible: normPath() in the rules
   // legitimately contains that literal.)
   expect(html).not.toContain(path.resolve(__dirname, '..', '..'));
