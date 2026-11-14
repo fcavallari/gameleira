@@ -573,8 +573,13 @@ button.primary.accent.new { min-height: 40px; padding: 0 18px 0 14px; gap: 8px; 
 .qtools .chain-only { color: var(--text); }
 
 /* The guide's door in the top bar. */
-.guide-link { font-size: 13px; font-weight: 500; color: var(--muted); text-decoration: none; padding: 6px 10px; border-radius: var(--radius-control); }
-.guide-link:hover { color: var(--text); background: var(--sheet); }
+/* A filled fig-green pill, like New session: the one coloured thing in the bar, so a newcomer finds it. */
+.guide-link { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; padding: 0 14px 0 11px; border-radius: 999px;
+  font-size: 13px; font-weight: 600; text-decoration: none; color: var(--frame); background: var(--accent);
+  transition: background-color .12s; }
+.guide-link svg { flex: none; }
+.guide-link:hover { background: var(--text); }
+.guide-link:active { transform: translateY(1px); }
 .guide-pointer { margin: 0; color: var(--muted); }
 .guide-pointer a, .gbody a { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
 .guide-pointer a:hover, .gbody a:hover { color: var(--text); }

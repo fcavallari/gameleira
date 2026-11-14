@@ -1,6 +1,6 @@
 import { useRef, useState, type DragEvent } from 'react';
 import { handlesSupported, pickCaptureFiles, sourcedFromDrop } from '../session/capture-files';
-import { Mark, Wordmark } from './Brand';
+import { Fig, Mark, Wordmark } from './Brand';
 import { ConfirmedTab, SaveFolderNote, useSaveSession } from './ConfirmedTab';
 import { guideHref } from './route';
 import { StoreErrorBanner } from './StoreErrorBanner';
@@ -23,7 +23,7 @@ const fmt = (n: number): string => n.toLocaleString('en-US');
 
 /** The guide's door, at the right of the top bar on every screen. */
 export function GuideLink() {
-  return <a className="guide-link" href={guideHref()}>Guide</a>;
+  return <a className="guide-link" href={guideHref()}><Fig />Guide</a>;
 }
 
 /** The capture command as a terminal block, with its Copy button in the block's own header. */
