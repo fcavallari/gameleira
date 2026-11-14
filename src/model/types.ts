@@ -48,7 +48,8 @@ export interface PersistenceItem { id: string; kind: 'add' | 'remove'; plistPath
   instigatorToken: TokenKey | null; appToken: TokenKey | null;   // raw
   instigator: ProcId | null; app: ProcId | null;            // resolved in resolveRelations
   creator: ProcId | null }                                  // the plist's writer, resolved in resolveRelations
-export interface CaptureStats { lines: number; events: number; badLines: number;
+/** `lines` and `badLines` count records, not lines, when `layout` is 'objects' (a pretty-printed export). */
+export interface CaptureStats { lines: number; events: number; badLines: number; layout?: 'objects';
   otherEvents: Record<string, number>; versions: number[];
   firstSeq: number | null; firstTime: string | null; lastTime: string | null }
 export interface CaptureModel { processes: Map<ProcId, Process>; tokenIndex: Map<TokenKey, ProcId>;

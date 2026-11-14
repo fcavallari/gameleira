@@ -175,7 +175,7 @@ function DropZone({ over }: { over: boolean }) {
               : c.capRecs.some(r => c.captureFiles.has(r.fingerprint))
                 ? 'Reload this session’s captures, or drop a capture file'
                 : 'Drop a capture file to begin'}</p>
-            <p className="muted">eslogger JSONL, any size. It is read here and never leaves this browser.</p>
+            <p className="muted">eslogger JSONL or a Mac Monitor export, any size. It is read here and never leaves this browser.</p>
           </div>
           <div className="drop-acts">
             {activeRec && c.captureFiles.has(activeRec.fingerprint) && (

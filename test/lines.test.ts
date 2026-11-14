@@ -115,5 +115,5 @@ test('fingerprint differs when head bytes differ', async () => {
 });
 
 test('non-eslogger file rejected', async () => {
-  await expect(loadCapture(new Blob(['{"foo":1}\n']))).rejects.toThrow('No eslogger events found');
+  await expect(loadCapture(new Blob(['{"foo":1}\n']))).rejects.toThrow('No eslogger or Mac Monitor events found');
 });

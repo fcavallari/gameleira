@@ -189,7 +189,7 @@ export function StartScreen() {
           <section className="howto" aria-labelledby="start-h">
             <h2 id="start-h">Start an investigation</h2>
             <p className="muted">Gameleira reads captures made by Apple’s <span className="mono">eslogger</span>. The capture runs on the Mac
-              you are investigating, which need not be the one you are reading this on.</p>
+              you are investigating, which need not be the one you are reading this on. A trace exported from Mac Monitor also loads.</p>
             <ol className="steps">
               <li><strong>Capture on that Mac.</strong> Run the command below in its Terminal (it needs your admin password),
                 then stop it with Ctrl-C once the activity you care about has happened.</li>
