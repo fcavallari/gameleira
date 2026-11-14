@@ -103,7 +103,7 @@ export function RootField() {
         </g>
       ))}
       {TRUNKS.map(({ x, kind }) => (
-        <g key={kind} className={`trunk ${kind}`}>
+        <g key={kind} className={`ftrunk ${kind}`}>
           <line className="stem" x1={`${x}%`} y1="0" x2={`${x}%`} y2="100%" stroke={`var(--root-${kind})`}
             strokeDasharray={kind === 'current' ? '14 8' : undefined} />
           <line x1={`${x}%`} y1="94%" x2={`${x - 2.5}%`} y2="100%" stroke={`var(--root-${kind})`} strokeWidth="2" />

@@ -330,6 +330,25 @@ function LaunchItems({ cap, p, findings, onSelect }: { cap: LoadedCapture; p: Pr
 }
 
 /** Before anything is selected: what is left to review, by severity, and the keys that work through it. */
+/**
+ * The unreviewed rows as one bar split by severity, each part as wide as its share, its count printed above it. The
+ * label and the bar share one column template, so each count stands over its own part.
+ */
+function SeverityBar({ counts }: { counts: (readonly [Severity, number])[] }) {
+  const parts = counts.filter(([, n]) => n > 0);
+  const cols = parts.map(([, n]) => `minmax(64px, ${n}fr)`).join(' ');
+  return (
+    <div className="sev-split" role="img" aria-label={`Unreviewed by severity: ${counts.map(([s, n]) => `${s} ${n}`).join(', ')}`}>
+      <div className="sevbar-labels" style={{ gridTemplateColumns: cols }}>
+        {parts.map(([s, n]) => <span key={s} className={`sev-${s}`}><span>{s}</span> <b className="num">{n}</b></span>)}
+      </div>
+      <div className="sevbar" style={{ gridTemplateColumns: cols }}>
+        {parts.map(([s]) => <span key={s} className={`seg ${s}`} />)}
+      </div>
+    </div>
+  );
+}
+
 function NothingSelected() {
   const { triage, verdicts } = useSession();
   const queue = triage?.queue ?? [];
@@ -338,11 +357,7 @@ function NothingSelected() {
   return (
     <div className="detail-empty">
       <p className="lead-figure"><span className="num">{open.length}</span> of {queue.length} flagged {queue.length === 1 ? 'row is' : 'rows are'} unreviewed</p>
-      {open.length > 0 && (
-        <p className="sev-split">
-          {(['high', 'med', 'low'] as const).map(s => <span key={s}><span className={`badge sev-${s}`}>{s}</span> <span className="num">{by(s)}</span></span>)}
-        </p>
-      )}
+      {open.length > 0 && <SeverityBar counts={(['high', 'med', 'low'] as const).map(s => [s, by(s)] as const)} />}
       <p className="muted">Select a flagged process on the left to see why it was flagged. Rows run high first, then by time.</p>
       <dl className="keys">
         {TRIAGE_KEYS.map(k => <div key={k.key}><dt><kbd>{k.key}</kbd></dt><dd>{k.what}</dd></div>)}

@@ -208,7 +208,8 @@ export function StartScreen() {
           <div className="ground">
             <div className="specimens">
               {TRUNKS.map(t => (
-                <span key={t.kind} className={`specimen ${t.kind}`} style={{ left: `${t.x}%` }}>
+                <span key={t.kind} className={`specimen ${t.kind}`} style={{ left: `${t.x}%` }} tabIndex={0}
+                  title={`Highlights the ${t.label.toLowerCase()} trunk in the drawing`}>
                   <RootSwatch kind={t.kind} />{t.label}
                 </span>
               ))}

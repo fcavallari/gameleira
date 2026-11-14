@@ -125,13 +125,38 @@ function LoadStatus() {
           {c.capRecs.map(r => (
             <li key={r.fingerprint} className={r.fingerprint === c.active ? 'active' : ''}>
               {c.captures.has(r.fingerprint)
-                ? <span>{r.fileName} · {fmt(r.events)} events · {fmt(r.processes)} processes · {fmt(r.flagged)} flagged</span>
+                ? <button className="captab" aria-pressed={r.fingerprint === c.active} onClick={() => { c.setActive(r.fingerprint); }}
+                    title={`Show ${r.fileName}`}>{r.fileName} · {fmt(r.events)} events · {fmt(r.processes)} processes · {fmt(r.flagged)} flagged</button>
                 : <span><span className="warn">Re-add {r.fileName} to continue</span> <ReloadOne fingerprint={r.fingerprint} fileName={r.fileName} /></span>}
             </li>
           ))}
         </ul>
       )}
     </>
+  );
+}
+
+/**
+ * What Save session writes and where, behind a small (i) beside the button: it opens on hover or focus, and a click
+ * pins it open so its links can be used. The text stays in the page, hidden until then.
+ */
+function SaveInfo({ saver }: { saver: ReturnType<typeof useSaveSession> }) {
+  const c = useSession();
+  const [open, setOpen] = useState(false);
+  const redacted = c.exportOpts.redactArgs;
+  return (
+    <span className={`info${open ? ' open' : ''}${redacted ? '' : ' attention'}`}
+      onKeyDown={e => { if (e.key === 'Escape') setOpen(false); }}>
+      <button className="info-btn" aria-expanded={open} aria-controls="save-info" aria-label="About Save session"
+        onClick={() => { setOpen(o => !o); }}>i</button>
+      <span id="save-info" className="info-pop small" role="note">
+        {redacted
+          ? 'Save session redacts command-line arguments.'
+          : <><span className="warn">Save session includes full command lines, which can hold secrets such as passwords.</span> Redact them on
+            the <button className="link" onClick={() => { setOpen(false); c.setView('confirmed'); }}>Confirmed tab</button>.</>}
+        {' '}<SaveFolderNote s={saver} />
+      </span>
+    </span>
   );
 }
 
@@ -263,19 +288,13 @@ export function SessionScreen() {
           {!bigDrop && <FilePicker label="Add capture files" />}
           {/* The Confirmed tab has the same download as "Export session", next to its options. */}
           {c.view !== 'confirmed' && (
-            <button onClick={() => { void save(); }}
-              title="Save this session (verdicts, notes, routine marks) as a JSON file. Redaction options are on the Confirmed tab.">Save session</button>
+            <span className="save-group">
+              <button onClick={() => { void save(); }}
+                title="Save this session (verdicts, notes, routine marks) as a JSON file. Redaction options are on the Confirmed tab.">Save session</button>
+              <SaveInfo saver={saver} />
+            </span>
           )}
         </div>
-        {c.view !== 'confirmed' && (
-          <p className="save-note muted small">
-            {c.exportOpts.redactArgs
-              ? 'Save session redacts command-line arguments.'
-              : <><span className="warn">Save session includes full command lines, which can hold secrets such as passwords.</span> Redact them on
-                the <button className="link" onClick={() => { c.setView('confirmed'); }}>Confirmed tab</button>.</>}
-            {' '}<SaveFolderNote s={saver} />
-          </p>
-        )}
         {c.view !== 'confirmed' && saver.done && <p role="status" className="save-note small">{saver.done}</p>}
         {saveError && <p role="alert" className="error">{saveError}</p>}
         <Counts />

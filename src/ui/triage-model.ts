@@ -11,8 +11,10 @@ export interface TriageFilters {
   sev: Set<Severity>;
   search: string;
   showHidden: boolean;
+  /** Only rows queued because they sit under, or in, a flagged chain. */
+  chainOnly: boolean;
 }
-export const DEFAULT_FILTERS: TriageFilters = { status: 'all', sev: new Set<Severity>(['high', 'med', 'low']), search: '', showHidden: false };
+export const DEFAULT_FILTERS: TriageFilters = { status: 'all', sev: new Set<Severity>(['high', 'med', 'low']), search: '', showHidden: false, chainOnly: false };
 
 /** Verdicts are keyed by the process id; a persistence-only item has none, so it uses its queue key (`i:<id>`). */
 export const verdictKey = (q: QueueItem): string => q.procId ?? q.key;
