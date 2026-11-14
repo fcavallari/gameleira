@@ -16,6 +16,8 @@ export interface BtmInfo { plistPath: string | null; executablePath: string | nu
   app: ProcInfo | null; appToken: TokenKey | null }                // the app process that registered it
 export interface NormEvent {
   seq: number; time: string; kind: EventKind; rawType: string; version: number;
+  /** A Mac Monitor record's mach_time: it orders the trace, since Mac Monitor's sequence numbers are per ES client. */
+  machTime?: number;
   proc: ProcInfo;
   child?: ProcInfo;                                         // fork
   target?: ProcInfo; args?: string[]; cwd?: string | null;  // exec
