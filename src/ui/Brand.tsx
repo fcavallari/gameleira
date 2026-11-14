@@ -13,6 +13,17 @@ export function Mark({ size = 20 }: { size?: number }) {
   );
 }
 
+/** A fig, the gameleira's fruit, drawn flat like the mark: the body, its stem and one leaf. The guide's icon. */
+export function Fig({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+      <path d="M8 4.4c-1.2.9-1.6 1.8-2.6 2.6C3.8 8.2 2.4 9.4 2.4 11.4 2.4 13.6 4.9 15 8 15s5.6-1.4 5.6-3.6c0-2-1.4-3.2-3-4.4C9.6 6.2 9.2 5.3 8 4.4Z" />
+      <rect x="7.3" y="1.4" width="1.4" height="3.4" rx=".5" />
+      <path d="M8.7 3.1C9.6 1.6 11.4 1 13.2 1.6 12.4 3.2 10.6 3.9 8.7 3.6Z" />
+    </svg>
+  );
+}
+
 export function Wordmark() {
   return <span className="brand"><Mark /><span className="wordmark">Gameleira</span></span>;
 }
