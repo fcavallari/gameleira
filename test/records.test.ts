@@ -87,6 +87,10 @@ test('detectLayout: JSONL reads by line, pretty JSON and arrays by object', asyn
   expect(await at('not json\n{"a":1}')).toBe('lines');
 });
 
+/** What the queue flags, without anything built from sequence numbers (persistence ids are). */
+const shape = (q: Awaited<ReturnType<typeof loadCapture>>['analysis']['queue']) =>
+  q.map(i => [i.kind, i.procId, i.severity, i.findings.map(f => `${f.ruleId}:${f.evidence}`)]);
+
 test('Mac Monitor JSONL and pretty exports load like the eslogger capture they extend', async () => {
   const base = await loadCapture(new Blob([lab.join('\n')]));
   const jsonl = await loadCapture(new Blob([lab.map(l => JSON.stringify(macMonitor(l))).join('\n')]));
@@ -94,7 +98,7 @@ test('Mac Monitor JSONL and pretty exports load like the eslogger capture they e
   for (const c of [jsonl, pre]) {
     expect(c.model.stats.events).toBe(111);
     expect(c.model.stats.badLines).toBe(0);
-    expect(c.analysis.queue.map(q => q.key)).toEqual(base.analysis.queue.map(q => q.key));
+    expect(shape(c.analysis.queue)).toEqual(shape(base.analysis.queue));
   }
   expect(pre.model.stats.layout).toBe('objects');
   expect(pre.model.stats.lines).toBe(111);
@@ -126,4 +130,25 @@ test('the summary line counts unreadable records, not lines, in a pretty capture
   expect(captureInfo(stats).line).toBe('1 unreadable line');
   expect(captureInfo({ ...stats, layout: 'objects' }).line).toBe('1 unreadable record');
   expect(captureInfo({ ...stats, layout: 'objects', badLines: 2 }).line).toBe('2 unreadable records');
+});
+
+test('Mac Monitor records are ordered by mach_time: its sequence numbers are per ES client, not one order', async () => {
+  const base = await loadCapture(new Blob([lab.join('\n')]));
+  // Two clients numbering their own messages from 0 (process events and the rest), and the file in reverse order.
+  const counters = { proc: 0, other: 0 };
+  const records = lab.map((l) => {
+    const o = macMonitor(l) as { event: Record<string, unknown>; global_seq_num: number };
+    const client = ['fork', 'exec', 'exit'].includes(Object.keys(o.event)[0]!) ? 'proc' : 'other';
+    o.global_seq_num = counters[client]++;
+    return JSON.stringify(o, null, 2);
+  }).reverse();
+  const c = await loadCapture(new Blob([records.join('\n')]));
+  expect(c.model.stats.events).toBe(111);
+  expect(shape(c.analysis.queue)).toEqual(shape(base.analysis.queue));
+  // seq is the record's place in mach_time order, so it stays unique (btm ids and React keys are built from it).
+  expect(c.model.stats.firstSeq).toBe(0);
+  expect(c.model.stats.firstTime).toBe(base.model.stats.firstTime);
+  const ids = c.model.persistence.map(p => p.id);
+  expect(new Set(ids).size).toBe(ids.length);
+  expect(ids.length).toBe(base.model.persistence.length);
 });

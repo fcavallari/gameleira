@@ -23,7 +23,11 @@ function newProcess(info: ProcInfo, image: Image, seq: number): Process {
   };
 }
 
-/** Buffers parsed lines; finish() applies them in global_seq_num order. */
+/**
+ * Buffers parsed lines; finish() applies them in global_seq_num order. A Mac Monitor trace is applied in mach_time
+ * order instead (ties in file order), and its events are renumbered by that order: Mac Monitor's global_seq_num counts
+ * the messages of each of its ES clients, so one trace holds several sequences that start over.
+ */
 export class ModelBuilder {
   private events: NormEvent[] = [];
   private lines = 0;
@@ -42,7 +46,11 @@ export class ModelBuilder {
   }
 
   finish(): CaptureModel {
-    const events = this.events.sort((a, b) => a.seq - b.seq);
+    const byMachTime = this.events.some(e => e.machTime !== undefined);
+    const events = byMachTime
+      ? this.events.sort((a, b) => (a.machTime ?? 0) - (b.machTime ?? 0))
+      : this.events.sort((a, b) => a.seq - b.seq);
+    if (byMachTime) events.forEach((e, i) => { e.seq = i; });
     for (const ev of events) this.apply(ev);
     const first = events[0];
     const last = events[events.length - 1];

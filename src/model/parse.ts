@@ -88,6 +88,7 @@ function normalize(o: Json): NormEvent {
     version: o.version ?? 0,
     proc: procInfo(o.process),
   };
+  if (typeof o.telemetry_version === 'string' && typeof o.mach_time === 'number') ev.machTime = o.mach_time;
   switch (kind) {
     case 'fork':
       ev.child = procInfo(e.child);
