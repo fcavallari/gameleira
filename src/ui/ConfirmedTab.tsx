@@ -92,7 +92,8 @@ export function SaveFolderNote({ s }: { s: SaveSession }) {
   if (!folderSupported()) return null;
   return c.saveFolder
     ? <>Saves into “{c.saveFolder.name}”. <button className="link" onClick={() => { void s.changeFolder(); }}>Change folder</button></>
-    : <>The first save asks for a folder; opening a session later looks there for a newer copy.</>;
+    : <>The first save asks for a folder; opening a session later looks there for a newer copy. Pick or make a folder
+      inside Documents: Chrome refuses your home folder, Desktop, Documents and Downloads themselves.</>;
 }
 
 export function ConfirmedTab() {
